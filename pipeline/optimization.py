@@ -6,7 +6,8 @@ import logging
 
 from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 
-from pipeline.modeling import detect_problem_type, get_pipelines
+from pipeline.utils import detect_problem_type 
+from pipeline.modeling import get_pipelines
 
 logger = logging.getLogger(__name__)
 
@@ -70,25 +71,15 @@ def get_search_space(trial, model_name, problem_type):
 # FUNCIÓN OBJETIVO OPTIMIZADA
 # ─────────────────────────────────────────────
 
-def objective(trial, X, y, model_name):
+def objective(trial, pipe, X, y, model_name):
 
     problem_type = detect_problem_type(y)
-
-    # fast_mode=True → pipelines más ligeros para Optuna
-    pipelines = get_pipelines(
-        n_features=X.shape[1],
-        problem_type=problem_type,
-        fast_mode=True
-    )
-
-    pipe = pipelines[model_name]
 
     params = get_search_space(trial, model_name, problem_type)
     params = {f"model__{k}": v for k, v in params.items()}
 
     pipe.set_params(**params)
 
-    # CV reducido para velocidad
     if problem_type == "classification":
         cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
         scoring = "f1_weighted"
@@ -102,69 +93,70 @@ def objective(trial, X, y, model_name):
         y,
         cv=cv,
         scoring=scoring,
-        n_jobs=-1
+        n_jobs=1   # importante
     )
 
     return float(np.mean(scores))
-
 
 # ─────────────────────────────────────────────
 # OPTIMIZACIÓN EFICIENTE TOP-K
 # ─────────────────────────────────────────────
 
-def optimize_top_models(
+def optimize_model(
+    model_name,
     X,
     y,
-    top_models,
-    n_trials=25,
-    timeout=600
+    n_trials=20,
+    timeout=300
 ):
+    """Optimiza hiperparámetros de un modelo específico.
+    
+    Args:
+        model_name: Nombre del modelo a optimizar
+        X: Features de entrenamiento
+        y: Target de entrenamiento
+        n_trials: Número de trials de Optuna
+        timeout: Timeout en segundos
+        
+    Returns:
+        dict con los mejores parámetros encontrados (sin prefijo "model__")
     """
-    Optimiza SOLO los modelos TOP seleccionados.
 
-    Estrategia:
-    - Reduce costo computacional
-    - Usa pruning agresivo
-    - Usa pipelines rápidos
-    """
+    problem_type = detect_problem_type(y)
 
-    best_results = []
-
-    for model_name in top_models:
-
-        logger.info(f"Optimizando {model_name} con Optuna...")
-
-        study = optuna.create_study(
-            direction="maximize",
-            sampler=optuna.samplers.TPESampler(seed=42),
-            pruner=optuna.pruners.MedianPruner(
-                n_startup_trials=5,
-                n_warmup_steps=5
-            )
-        )
-
-        study.optimize(
-            lambda trial: objective(trial, X, y, model_name),
-            n_trials=n_trials,
-            timeout=timeout,
-            n_jobs=1  # importante para evitar sobrecarga
-        )
-
-        best_results.append({
-            "model": model_name,
-            "best_score": float(study.best_value),
-            "best_params": study.best_params
-        })
-
-        logger.info(
-            f"{model_name} → best_score={study.best_value:.4f}"
-        )
-
-    # ordenar resultados
-    best_results = sorted(
-        best_results,
-        key=lambda x: x["best_score"],
-        reverse=True
+    pipelines = get_pipelines(
+        n_features=X.shape[1],
+        problem_type=problem_type,
+        y=y,
+        fast_mode=True
     )
 
-    return best_results
+    logger.info(f"Optimizando {model_name}...")
+
+    pipe = pipelines[model_name]
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=optuna.pruners.MedianPruner(
+            n_startup_trials=5,
+            n_warmup_steps=3
+        )
+    )
+
+    study.optimize(
+        lambda trial: objective(trial, pipe, X, y, model_name),
+        n_trials=n_trials,
+        timeout=timeout,
+        n_jobs=1
+    )
+
+    # Retornar parámetros sin prefijo
+    best_params = {
+        k.replace("model__", ""): v
+        for k, v in study.best_params.items()
+    }
+
+    logger.info(f"{model_name} → {study.best_value:.4f}")
+
+    return best_params

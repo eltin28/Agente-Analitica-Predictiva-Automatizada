@@ -1,5 +1,6 @@
 # pipeline/utils.py
 import pandas as pd
+import numpy as np
 import logging
 
 logger = logging.getLogger(__name__)
@@ -71,21 +72,27 @@ def detect_target(df: pd.DataFrame) -> str:
 # DETECCIÓN DE PROBLEMA (UNIFICADA)
 # ─────────────────────────────────────────────
 
-def detect_problem_type(y: pd.Series) -> str:
+def detect_problem_type(y) -> str:
     """
     Detecta si el problema es clasificación o regresión.
 
-    Reglas consistentes con modeling:
-    - Tipo object → clasificación
-    - Pocos valores únicos → clasificación
-    - Muchos valores únicos → regresión
+    Soporta:
+    - pandas.Series
+    - numpy.ndarray
     """
 
-    if y.dtype == "object":
+    # ── Normalización de entrada ──────────────────
+    if isinstance(y, np.ndarray):
+        y_series = pd.Series(y)
+    else:
+        y_series = y
+
+    # ── Lógica ───────────────────────────────────
+    if y_series.dtype == "object":
         return "classification"
 
-    unique_values = y.nunique()
-    total_values = len(y)
+    unique_values = y_series.nunique()
+    total_values = len(y_series)
 
     if unique_values <= 20 or (unique_values / total_values) < 0.05:
         return "classification"

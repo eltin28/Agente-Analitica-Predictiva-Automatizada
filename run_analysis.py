@@ -23,7 +23,6 @@ from pipeline.modeling import (
     get_best_model,
     evaluate_trained_models,
     get_classification_report,
-    detect_problem_type,
     train_model_with_params,
 )
 from pipeline.optimization import optimize_model
@@ -33,7 +32,7 @@ from pipeline.explainability import (
     generate_lime_text_explanation,
     get_shap_feature_importance,
 )
-from pipeline.utils import detect_target
+from pipeline.utils import detect_target, detect_problem_type
 from pipeline.reporting import generate_pdf_report
 
 logging.basicConfig(
@@ -108,18 +107,19 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
             preprocessor,
             label_encoder,
             column_types,
-        ) = preprocess_data(df, target)
+        ) = preprocess_data(df, target, problem_type)
 
         preprocessing_report = get_preprocessing_report(column_types)
 
         # ── 4. Cross Validation ───────────────────────
         logger.info("\n[PASO 4] Evaluando modelos (cross validation)...")
-        cv_results = evaluate_models(X_train, y_train)
+        cv_results = evaluate_models(X_train, y_train, problem_type)
         logger.info(f"\nRanking CV:\n{cv_results.to_string(index=False)}")
 
         # ── 5. Entrenamiento base ─────────────────────
         logger.info("\n[PASO 5] Entrenando modelos base...")
-        trained_models = train_models(X_train, y_train)
+        selected_models = cv_results["model"].tolist()
+        trained_models = train_models(X_train, y_train, selected_models, problem_type)
 
        # ── 6. Selección del mejor modelo ─────────────
         logger.info("\n[PASO 6] Seleccionando mejor modelo...")
@@ -135,12 +135,12 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
             logger.info("\n[PASO 6b] Optimizando hiperparámetros con Optuna...")
             try:
                 best_params = optimize_model(
-                    best_name, X_train, y_train, n_trials=n_trials
+                    best_name, X_train, y_train, n_trials=n_trials, timeout=600
                 )
 
                 if best_params:
                     tuned_models = train_model_with_params(
-                        X_train, y_train, best_name, best_params
+                        X_train, y_train, best_name, best_params, problem_type
                     )
 
                     tuned_model = tuned_models[best_name]
@@ -198,7 +198,7 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
 
         # Métricas de modelos base (comparación dashboard)
         test_metrics = evaluate_trained_models(
-            trained_models, X_test, y_test
+            trained_models, X_test, y_test, problem_type
         )
 
         # Evaluar también el modelo final (base o optimizado)
@@ -227,34 +227,43 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
         import pandas as pd
         test_metrics = pd.concat([test_metrics, pd.DataFrame([final_metrics])], ignore_index=True)
 
-        # Classification report del modelo final
-        clf_report = get_classification_report(
-            final_model, X_test, y_test, label_encoder
-        )
-
-        logger.info(f"\nClassification Report ({best_name} FINAL):\n{clf_report}")
+        # Classification report del modelo final (solo para clasificación)
+        if problem_type == "classification":
+            clf_report = get_classification_report(
+                final_model, X_test, y_test, label_encoder
+            )
+            logger.info(f"\nClassification Report ({best_name} FINAL):\n{clf_report}")
+        else:
+            clf_report = None
         # ── 8. Explicabilidad ─────────────────────────
         logger.info("\n[PASO 8] Generando explicaciones (SHAP + LIME)...")
 
-        if X_train.shape[0] > 5000:
-            logger.info("Dataset grande: limitando SHAP sample")
+        # Política de explicabilidad (performance-first)
+        if X_train.shape[0] > 3000:
+            logger.info("SHAP en modo FAST (dataset grande)")
+            shap_sample_size = 30
+        elif X_train.shape[0] > 1000:
             shap_sample_size = 50
         else:
             shap_sample_size = 100
 
         shap_result = compute_shap_values(
-            pipeline=best_model,
+            pipeline=final_model,
             X_train=X_train,
+            y_train=y_train,
             label_encoder=label_encoder,
             sample_size=shap_sample_size
         )
+
         shap_importance = get_shap_feature_importance(shap_result)
 
         lime_sample = X_train.sample(min(1000, len(X_train)), random_state=42)
+        y_lime_sample = y_train[:len(lime_sample)] if len(y_train) == len(X_train) else None
 
         lime_result = compute_lime_explanation(
-            pipeline=best_model,
+            pipeline=final_model,
             X_train=lime_sample,
+            y_train=y_lime_sample,
             label_encoder=label_encoder,
         )
         lime_text = generate_lime_text_explanation(lime_result)
@@ -285,7 +294,7 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
                 "file": os.path.basename(file_path),
                 "target": target,
                 "problem_type": problem_type,
-                "best_model": best_name,
+                "best_model": f"{best_name} (optimized)" if best_params else best_name,
                 "elapsed_seconds": round(elapsed, 2),
             },
 
@@ -296,7 +305,6 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
             "model_performance": {
                 "cv_results": cv_results.to_dict(orient="records"),
                 "test_metrics": test_metrics.to_dict(orient="records"),
-                "classification_report": clf_report,
             },
 
             # ── Explicabilidad ────────────────────────

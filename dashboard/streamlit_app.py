@@ -1,29 +1,49 @@
 # dashboard/streamlit_app.py
+"""
+Dashboard del agente de análisis automático.
+Polling automático cada 3 segundos sin botón manual.
+Muestra barra de progreso reactiva según estado de la task.
+"""
 
+import time
 import streamlit as st
 import requests
 import pandas as pd
 
 API_URL = "http://127.0.0.1:8000/analyze"
 
-st.set_page_config(page_title="Data Analyst Agent", layout="wide")
+POLL_INTERVAL = 3   # segundos entre consultas de estado
+
+# ─────────────────────────────────────────────
+# PAGE CONFIG
+# ─────────────────────────────────────────────
+
+st.set_page_config(
+    page_title="Data Analyst Agent",
+    page_icon="🤖",
+    layout="wide",
+)
 
 # ─────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────
 
-if "task_id" not in st.session_state:
-    st.session_state.task_id = None
+defaults = {
+    "task_id": None,
+    "task_status": None,    # queued | running | completed | failed
+    "results": None,        # dict con resultados cuando completed
+    "polling": False,       # True mientras el pipeline está activo
+}
 
-if "last_status" not in st.session_state:
-    st.session_state.last_status = None
-
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 # ─────────────────────────────────────────────
 # API HELPERS
 # ─────────────────────────────────────────────
 
-def upload_file(file, optimize):
+def upload_file(file, optimize: bool) -> dict | None:
     try:
         res = requests.post(
             API_URL + "/",
@@ -34,227 +54,270 @@ def upload_file(file, optimize):
         res.raise_for_status()
         return res.json()
     except requests.exceptions.Timeout:
-        st.error("Timeout al subir archivo.")
+        st.error("Timeout al subir archivo. Reintenta.")
     except requests.exceptions.RequestException as e:
         st.error(f"Error de conexión: {e}")
     return None
 
 
-def get_status(task_id):
+def fetch_status(task_id: str) -> dict | None:
     try:
         res = requests.get(f"{API_URL}/status/{task_id}", timeout=10)
         res.raise_for_status()
         return res.json()
-    except:
+    except Exception:
         return None
 
 
-def get_results(task_id):
+def fetch_results(task_id: str) -> dict | None:
     try:
         res = requests.get(f"{API_URL}/results/{task_id}", timeout=20)
         res.raise_for_status()
         return res.json()
-    except:
+    except Exception:
         return None
 
+# ─────────────────────────────────────────────
+# ESTADO → PROGRESO
+# ─────────────────────────────────────────────
+
+STATUS_CONFIG = {
+    "queued":    {"pct": 5,   "label": "En cola — esperando proceso disponible..."},
+    "running":   {"pct": 55,  "label": "Ejecutando pipeline de ML..."},
+    "completed": {"pct": 100, "label": "Análisis completado"},
+    "failed":    {"pct": 100, "label": "El análisis falló"},
+}
 
 # ─────────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────────
 
-st.title("Data Analyst Agent")
+st.title("🤖 Data Analyst Agent")
 
-# ─────────────────────────────────────────────
-# REGLAS DE NEGOCIO (CRÍTICO)
-# ─────────────────────────────────────────────
-
-with st.expander("Reglas de uso y consideraciones del sistema", expanded=False):
-
+with st.expander("Capacidades y limitaciones del sistema", expanded=False):
     st.markdown("""
-### Entrada de datos
-- Solo se permiten archivos **CSV o Excel (.xlsx)**.
-- Tamaño máximo permitido: **50 MB**.
-- El dataset debe contener una columna objetivo (target).
-- El sistema intentará detectar automáticamente el target, pero:
-  - Si hay múltiples columnas candidatas, puede elegir incorrectamente.
-  - Se recomienda usar nombres como: `target`, `label`, `class`, `outcome`.
+**Pipeline automático CRISP-DM**
+- Detección automática de variable objetivo (`target`, `label`, `class`, `survived`…)
+- Preprocesamiento dinámico: imputación, encoding, winsorización, filtro de correlación
+- 6 modelos: RandomForest · LightGBM · SVM · KNN · MLP · DecisionTree
+- Selección automática por F1-weighted con validación cruzada (5 folds)
+- Desbalanceo manejado con SMOTE
+- Interpretabilidad: SHAP (global) + LIME (local)
+- Optimización opcional con Optuna (solo sobre el mejor modelo)
+- Reporte PDF ejecutivo descargable
 
-### Procesamiento
-- Cada análisis se ejecuta en un **proceso independiente**.
-- El sistema soporta un máximo de:
-  - **2 ejecuciones simultáneas**
-  - **10 tareas en cola**
-- Si el sistema está saturado, la solicitud será rechazada.
-
-### Modelado
-- Se evalúan múltiples modelos automáticamente:
-  - RandomForest, LightGBM, SVM, KNN, MLP, DecisionTree
-- Se selecciona el mejor modelo basado en:
-  - Clasificación → F1-score
-  - Regresión → R²
-
-### Optimización (Optuna)
-- Si se activa:
-  - Solo se optimiza el **mejor modelo encontrado**
-  - Aumenta significativamente el tiempo de ejecución
-- No garantiza mejora, pero suele mejorar resultados en datasets complejos
-
-### Explicabilidad
-- Se generan explicaciones con:
-  - SHAP → importancia global
-  - LIME → explicación local
-- Puede fallar en datasets muy grandes o con alta dimensionalidad
-
-### Salidas
-- Se genera:
-  - Métricas de modelos
-  - Explicaciones
-  - Reporte PDF descargable
-
-### Limitaciones
-- No soporta:
-  - Datos no estructurados (texto libre sin procesar)
-  - Imágenes
-- Performance puede degradarse con:
-  - Muchas columnas categóricas
-  - Alta cardinalidad
-  - Datos muy grandes
-
-### Buenas prácticas
-- Limpiar datos antes de subirlos
-- Evitar columnas ID o irrelevantes
-- Reducir cardinalidad si es posible
+**Restricciones**
+- Formatos: CSV o XLSX · Máximo 50 MB
+- Máx. 2 análisis simultáneos · 10 en cola
+- No soporta texto libre, imágenes ni series de tiempo
+- El procesamiento puede tardar varios minutos
 """)
 
-# ─────────────────────────────────────────────
-# INPUT
-# ─────────────────────────────────────────────
-
-uploaded_file = st.file_uploader("Archivo de entrada", type=["csv", "xlsx"])
-optimize = st.checkbox("Optimizar con Optuna", value=False)
-
-if st.button("Ejecutar análisis", use_container_width=True):
-
-    if not uploaded_file:
-        st.warning("Debes subir un archivo.")
-        st.stop()
-
-    response = upload_file(uploaded_file, optimize)
-
-    if response:
-        st.session_state.task_id = response["task_id"]
-        st.success(f"Task creada: {st.session_state.task_id}")
-
+st.divider()
 
 # ─────────────────────────────────────────────
-# TRACKING
+# INPUT — solo visible si no hay tarea activa
 # ─────────────────────────────────────────────
 
-if st.session_state.task_id:
+if not st.session_state.polling and st.session_state.task_status != "completed":
 
-    task_id = st.session_state.task_id
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        uploaded_file = st.file_uploader(
+            "Sube tu dataset (CSV o XLSX)",
+            type=["csv", "xlsx"],
+        )
+    with col2:
+        st.write("")   # espaciado vertical
+        st.write("")
+        optimize = st.checkbox("Optimizar con Optuna", value=False)
 
-    st.subheader("Estado del análisis")
-
-    if st.button("Actualizar estado"):
-        status = get_status(task_id)
-        st.session_state.last_status = status
-
-    status = st.session_state.last_status
-
-    if not status:
-        st.info("Presiona 'Actualizar estado' para consultar progreso.")
-        st.stop()
-
-    state = status.get("status")
-
-    if state == "queued":
-        st.info("En cola")
-
-    elif state == "running":
-        st.warning("Procesando...")
-
-    elif state == "failed":
-        st.error(status.get("error"))
-
-    elif state == "completed":
-        st.success("Completado")
-
-    # ─────────────────────────────────────────
-    # RESULTADOS
-    # ─────────────────────────────────────────
-
-    if state == "completed":
-
-        results = get_results(task_id)
-
-        if not results:
-            st.error("No se pudieron obtener resultados.")
+    if st.button("▶ Ejecutar análisis", use_container_width=True, type="primary"):
+        if not uploaded_file:
+            st.warning("Debes subir un archivo antes de continuar.")
             st.stop()
 
-        run_info = results.get("run_info", {})
-        problem_type = run_info.get("problem_type", "classification")
+        with st.spinner("Enviando archivo..."):
+            response = upload_file(uploaded_file, optimize)
 
-        st.subheader("Resumen")
+        if response:
+            st.session_state.task_id    = response["task_id"]
+            st.session_state.task_status = "queued"
+            st.session_state.polling    = True
+            st.session_state.results    = None
+            st.rerun()
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Modelo", run_info.get("best_model"))
-        col2.metric("Target", run_info.get("target"))
-        col3.metric("Tiempo (s)", run_info.get("elapsed_seconds"))
+# ─────────────────────────────────────────────
+# POLLING AUTOMÁTICO
+# ─────────────────────────────────────────────
 
-        st.write(f"Tipo de problema: {problem_type}")
+if st.session_state.polling and st.session_state.task_id:
 
-        # ─────────────────────────────────────
-        # MÉTRICAS
-        # ─────────────────────────────────────
+    task_id = st.session_state.task_id
+    status_data = fetch_status(task_id)
 
-        st.subheader("Métricas")
+    if status_data:
+        st.session_state.task_status = status_data.get("status", "unknown")
 
-        perf = results.get("model_performance", {})
-        df_metrics = pd.DataFrame(perf.get("test_metrics", []))
+    state = st.session_state.task_status
+    cfg   = STATUS_CONFIG.get(state, {"pct": 0, "label": "Desconocido"})
 
-        if not df_metrics.empty:
-            st.dataframe(df_metrics, use_container_width=True)
+    # ── Barra de progreso ─────────────────────
+    st.subheader("Progreso del análisis")
 
-        if problem_type == "classification":
-            clf_report = perf.get("classification_report")
-            if clf_report:
-                with st.expander("Classification Report"):
-                    st.code(clf_report)
+    if state == "running":
+        # Barra indeterminada animada mientras corre el pipeline
+        progress_bar = st.progress(0)
+        status_text  = st.empty()
+        status_text.info(f"⚙️  {cfg['label']}")
 
-        # ─────────────────────────────────────
-        # LIME
-        # ─────────────────────────────────────
+        # Animación suave: avanza de 5% a 90% en incrementos
+        for pct in range(5, 91, 2):
+            time.sleep(0.04)
+            progress_bar.progress(pct)
 
-        st.subheader("LIME")
+        # Consultar estado real al terminar la animación
+        status_data = fetch_status(task_id)
+        if status_data:
+            st.session_state.task_status = status_data.get("status", state)
 
-        lime_data = results.get("explainability", {}).get("lime", {})
-        lime_text = lime_data.get("text")
+        st.rerun()
 
-        if lime_text:
+    elif state == "queued":
+        st.progress(cfg["pct"])
+        st.info(f"⏳  {cfg['label']}")
+        time.sleep(POLL_INTERVAL)
+        st.rerun()
+
+    elif state == "completed":
+        st.progress(100)
+        st.success(f"✅  {cfg['label']}")
+        st.session_state.polling = False
+
+        # Cargar resultados una sola vez
+        if not st.session_state.results:
+            with st.spinner("Cargando resultados..."):
+                st.session_state.results = fetch_results(task_id)
+        st.rerun()
+
+    elif state == "failed":
+        st.progress(100)
+        err = (status_data or {}).get("error", "Error desconocido")
+        st.error(f"❌  {cfg['label']}: {err}")
+        st.session_state.polling = False
+
+        if st.button("🔄 Intentar de nuevo"):
+            for k in defaults:
+                st.session_state[k] = defaults[k]
+            st.rerun()
+
+# ─────────────────────────────────────────────
+# RESULTADOS
+# ─────────────────────────────────────────────
+
+if st.session_state.task_status == "completed" and st.session_state.results:
+
+    results  = st.session_state.results
+    run_info = results.get("run_info", {})
+
+    st.divider()
+    st.subheader("Resultados del análisis")
+
+    # ── KPIs principales ──────────────────────
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Modelo seleccionado", run_info.get("best_model", "—"))
+    col2.metric("Variable objetivo",   run_info.get("target", "—"))
+    col3.metric("Tiempo de ejecución", f"{run_info.get('elapsed_seconds', '—')} s")
+
+    # ── Optuna ───────────────────────────────
+    optim = results.get("optimization", {})
+    if optim.get("enabled") and optim.get("best_params"):
+        with st.expander("⚙️ Parámetros encontrados por Optuna"):
+            st.json(optim["best_params"])
+
+    # ── Métricas ──────────────────────────────
+    st.subheader("Comparación de modelos")
+    perf        = results.get("model_performance", {})
+    test_metrics = perf.get("test_metrics", [])
+
+    if test_metrics:
+        df_m = pd.DataFrame(test_metrics)
+        best = run_info.get("best_model", "")
+
+        # Resaltar fila del mejor modelo
+        def highlight_best(row):
+            color = "background-color: #d4edda" if row["model"] == best else ""
+            return [color] * len(row)
+
+        st.dataframe(
+            df_m.style.apply(highlight_best, axis=1),
+            use_container_width=True,
+        )
+    else:
+        st.warning("No hay métricas disponibles.")
+
+    clf_report = perf.get("classification_report")
+    if clf_report:
+        with st.expander("📋 Classification Report completo"):
+            st.code(clf_report)
+
+    # ── SHAP ──────────────────────────────────
+    st.subheader("Importancia global de variables (SHAP)")
+    shap_d = results.get("explainability", {}).get("shap", {})
+    shap_imp = shap_d.get("feature_importance")
+
+    if shap_imp:
+        df_shap = pd.DataFrame(shap_imp)
+        st.bar_chart(
+            df_shap.set_index("feature")["importance"].sort_values(),
+            use_container_width=True,
+        )
+        with st.expander("Ver tabla de importancias"):
+            st.dataframe(df_shap, use_container_width=True)
+    else:
+        st.warning("SHAP no disponible.")
+
+    # ── LIME ──────────────────────────────────
+    st.subheader("Explicación local (LIME)")
+    lime_d    = results.get("explainability", {}).get("lime", {})
+    lime_text = lime_d.get("text")
+
+    if lime_text:
+        col1, col2 = st.columns([2, 1])
+        with col1:
             st.code(lime_text)
+        with col2:
+            probs = lime_d.get("probabilities", {})
+            if probs:
+                st.caption("Probabilidades por clase")
+                st.bar_chart(pd.Series(probs), use_container_width=True)
+    else:
+        st.warning("LIME no disponible.")
 
-            if problem_type == "classification":
-                probs = lime_data.get("probabilities", {})
-                if probs:
-                    st.bar_chart(pd.Series(probs))
+    # ── Preprocesamiento ──────────────────────
+    with st.expander("🔧 Detalle de preprocesamiento"):
+        prep = results.get("preprocessing", {})
+        if prep:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Columnas utilizadas**")
+                st.write("Numéricas:",  prep.get("numeric_features", []))
+                st.write("Nominales:", prep.get("nominal_features", []))
+                st.write("Ordinales:", prep.get("ordinal_features", []))
+            with c2:
+                st.markdown("**Columnas descartadas**")
+                st.write("Alta tasa de nulos:",    prep.get("dropped_high_missing", []))
+                st.write("Alta cardinalidad:",     prep.get("dropped_high_cardinality", []))
+                st.write("Posibles IDs:",          prep.get("dropped_id_like", []))
 
-        # ─────────────────────────────────────
-        # SHAP
-        # ─────────────────────────────────────
+    # ── PDF ───────────────────────────────────
+    st.divider()
+    pdf_url = f"{API_URL}/download/{st.session_state.task_id}"
+    st.markdown(f"### 📄 [Descargar reporte PDF]({pdf_url})")
 
-        st.subheader("SHAP")
-
-        shap_data = results.get("explainability", {}).get("shap", {})
-        shap_importance = shap_data.get("feature_importance")
-
-        if shap_importance:
-            df_shap = pd.DataFrame(shap_importance)
-            st.bar_chart(df_shap.set_index("feature")["importance"])
-
-        # ─────────────────────────────────────
-        # PDF
-        # ─────────────────────────────────────
-
-        pdf_url = f"{API_URL}/download/{task_id}"
-        st.markdown(f"[Descargar PDF]({pdf_url})")
+    # ── Nuevo análisis ────────────────────────
+    st.divider()
+    if st.button("🔄 Analizar otro dataset"):
+        for k in defaults:
+            st.session_state[k] = defaults[k]
+        st.rerun()

@@ -10,6 +10,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler, OrdinalEncoder, LabelEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.base import BaseEstimator, TransformerMixin
+from pipeline.utils import detect_problem_type
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,6 @@ class WinsorizationTransformer(BaseEstimator, TransformerMixin):
             X[col] = np.clip(X[col], l, u)
         return X
 
-
 # ─────────────────────────────────────────────
 # DETECCIÓN DE COLUMNAS
 # ─────────────────────────────────────────────
@@ -106,13 +106,12 @@ def detect_column_types(df, target):
 
         if pd.api.types.is_numeric_dtype(s):
             result["numeric"].append(col)
+        elif n_unique > HIGH_CARDINALITY_THRESHOLD:
+            result["categorical_nominal"].append(col)  # pero tratar diferente
+        elif n_unique <= ORDINAL_UNIQUE_THRESHOLD:
+            result["categorical_ordinal"].append(col)
         else:
-            if n_unique > HIGH_CARDINALITY_THRESHOLD:
-                result["drop"].append(col)
-            elif n_unique <= ORDINAL_UNIQUE_THRESHOLD:
-                result["categorical_ordinal"].append(col)
-            else:
-                result["categorical_nominal"].append(col)
+            result["categorical_nominal"].append(col)
 
     return result
 
@@ -130,19 +129,26 @@ def build_preprocessor(column_types, fast_mode=False):
 
     transformers = []
 
-    # NUMÉRICAS
+    # ── NUMÉRICAS ─────────────────────────────
     if column_types["numeric"]:
+
         steps = [
             ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
         ]
 
+        # Winsorization opcional (no bloquear pipeline)
         if WINSORIZE and not fast_mode:
-            steps.insert(1, ("winsor", WinsorizationTransformer()))
+            steps.append(("winsor", WinsorizationTransformer()))
 
-        transformers.append(("num", Pipeline(steps), column_types["numeric"]))
+        steps.append(("scaler", StandardScaler()))
 
-    # NOMINALES
+        transformers.append((
+            "num",
+            Pipeline(steps),
+            column_types["numeric"]
+        ))
+
+    # ── NOMINALES ─────────────────────────────
     if column_types["categorical_nominal"]:
         transformers.append((
             "nom",
@@ -150,25 +156,75 @@ def build_preprocessor(column_types, fast_mode=False):
                 ("imputer", SimpleImputer(strategy="most_frequent")),
                 ("onehot", OneHotEncoder(
                     handle_unknown="ignore",
-                    sparse=True,
+                    sparse_output=False,
                     max_categories=50
                 )),
             ]),
             column_types["categorical_nominal"]
         ))
 
-    # ORDINALES
+    # ── ORDINALES ─────────────────────────────
     if column_types["categorical_ordinal"]:
         transformers.append((
             "ord",
             Pipeline([
                 ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("ordinal", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)),
+                ("ordinal", OrdinalEncoder(
+                    handle_unknown="use_encoded_value",
+                    unknown_value=-1
+                )),
             ]),
             column_types["categorical_ordinal"]
         ))
 
-    return ColumnTransformer(transformers=transformers, remainder="drop")
+    return ColumnTransformer(
+        transformers=transformers,
+        remainder="drop"
+    )
+
+
+# ─────────────────────────────────────────────
+# EXTRACCIÓN DE NOMBRES DE FEATURES
+# ─────────────────────────────────────────────
+
+def _get_feature_names(preprocessor):
+    """Extrae nombres de features después de ColumnTransformer."""
+    feature_names = []
+    for name, transformer, columns in preprocessor.transformers_:
+        if name == "num":
+            feature_names.extend(columns)
+        elif name == "nom":
+            if hasattr(transformer.named_steps["onehot"], "get_feature_names_out"):
+                try:
+                    names = transformer.named_steps["onehot"].get_feature_names_out(columns)
+                    feature_names.extend(names)
+                except:
+                    feature_names.extend(columns)
+            else:
+                feature_names.extend(columns)
+        elif name == "ord":
+            feature_names.extend(columns)
+    return feature_names if feature_names else [f"feature_{i}" for i in range(100)]
+
+
+# ─────────────────────────────────────────────
+# REPORTE DE PREPROCESAMIENTO
+# ─────────────────────────────────────────────
+
+def get_preprocessing_report(column_types: dict) -> dict:
+    """Genera reporte de preprocesamiento."""
+    return {
+        "numeric_columns": len(column_types.get("numeric", [])),
+        "categorical_nominal_columns": len(column_types.get("categorical_nominal", [])),
+        "categorical_ordinal_columns": len(column_types.get("categorical_ordinal", [])),
+        "dropped_columns": len(column_types.get("drop", [])),
+        "columns_used": (
+            column_types.get("numeric", [])
+            + column_types.get("categorical_nominal", [])
+            + column_types.get("categorical_ordinal", [])
+        ),
+        "columns_dropped": column_types.get("drop", []),
+    }
 
 
 # ─────────────────────────────────────────────
@@ -188,7 +244,10 @@ def encode_target(y_train, y_test, problem_type):
 # PIPELINE PRINCIPAL
 # ─────────────────────────────────────────────
 
-def preprocess_data(df, target, problem_type, fast_mode=False):
+def preprocess_data(df, target, problem_type=None, fast_mode=False):
+
+    if problem_type is None:
+        problem_type = detect_problem_type(df[target])
 
     if target not in df.columns:
         raise ValueError("Target no encontrado")
@@ -213,6 +272,11 @@ def preprocess_data(df, target, problem_type, fast_mode=False):
 
     X_train = preprocessor.fit_transform(X_train)
     X_test = preprocessor.transform(X_test)
+
+    feature_names = _get_feature_names(preprocessor)
+
+    X_train = pd.DataFrame(X_train, columns=feature_names)
+    X_test = pd.DataFrame(X_test, columns=feature_names)
 
     y_train, y_test, le = encode_target(y_train, y_test, problem_type)
 

@@ -268,8 +268,9 @@ def get_status(task_id: str):
         response["error"] = task.get("error", "Error desconocido")
 
     if task["status"] == "completed" and task.get("result"):
-        response["best_model"] = task["result"].get("best_model")
-        response["elapsed_seconds"] = task["result"].get("elapsed_seconds")
+        run_info = task["result"].get("run_info", {})
+        response["best_model"] = run_info.get("best_model")
+        response["elapsed_seconds"] = run_info.get("elapsed_seconds")
 
     return response
 
@@ -357,11 +358,11 @@ def list_tasks(limit: int = 20):
                 "filename": data.get("filename"),
                 "created_at": data.get("created_at"),
                 "best_model": (
-                    data["result"].get("best_model")
+                    data["result"].get("run_info", {}).get("best_model")
                     if data.get("result") else None
                 ),
                 "elapsed_seconds": (
-                    data["result"].get("elapsed_seconds")
+                    data["result"].get("run_info", {}).get("elapsed_seconds")
                     if data.get("result") else None
                 ),
             })

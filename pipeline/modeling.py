@@ -7,6 +7,13 @@ import logging
 from sklearn.model_selection import cross_validate, StratifiedKFold, KFold
 from sklearn.feature_selection import SelectKBest, f_classif, f_regression
 
+from pipeline.config import (
+    detect_execution_mode,
+    MODEL_CONFIG,
+    SMOTE_CONFIG,
+    FEATURE_SELECTION_CONFIG
+)
+
 # Clasificación
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
@@ -33,26 +40,9 @@ from imblearn.over_sampling import SMOTE
 import lightgbm as lgb
 
 from pipeline.preprocessing import CorrelationFilter
+from pipeline.utils import detect_problem_type
 
 logger = logging.getLogger(__name__)
-
-
-# ─────────────────────────────────────────────
-# DETECCIÓN DE PROBLEMA
-# ─────────────────────────────────────────────
-
-def detect_problem_type(y: pd.Series) -> str:
-    if y.dtype == "object":
-        return "classification"
-
-    unique = y.nunique()
-    ratio = unique / len(y)
-
-    if unique <= 20 or ratio < 0.05:
-        return "classification"
-
-    return "regression"
-
 
 # ─────────────────────────────────────────────
 # CONFIGURACIONES RÁPIDAS vs FINALES
@@ -69,7 +59,7 @@ def _get_model(model_name, problem_type, fast_mode=True):
             return KNeighborsClassifier(n_neighbors=5)
 
         if model_name == "SVM":
-            return SVC(probability=True, C=1.0, random_state=42)
+            return SVC(C=1.0, random_state=42)
 
         if model_name == "RandomForest":
             return RandomForestClassifier(
@@ -135,36 +125,53 @@ def _get_model(model_name, problem_type, fast_mode=True):
 
 def get_pipelines(n_features, problem_type, y=None, fast_mode=True):
 
-    k = max(5, int(n_features * 0.3))
-    k = min(k, n_features)
+    # Validar y para evitar error en detect_execution_mode
+    n_samples = len(y) if y is not None else 1000
+    mode = detect_execution_mode(n_samples)
+    config = MODEL_CONFIG.get(mode, MODEL_CONFIG.get(list(MODEL_CONFIG.keys())[0]))
 
-    model_names = ["DecisionTree", "KNN", "SVM", "RandomForest", "LightGBM", "MLP"]
+    model_names = config["models"] if config else ["DecisionTree", "KNN", "RandomForest"]
+
+    # Feature selection dinámico
+    k = max(
+        FEATURE_SELECTION_CONFIG["min_features"],
+        int(n_features * FEATURE_SELECTION_CONFIG["ratio"])
+    )
+    k = min(k, n_features)
 
     pipelines = {}
 
     for name in model_names:
 
-        steps = [
-            ("corr_filter", CorrelationFilter()),
-        ]
+        steps = [("corr_filter", CorrelationFilter())]
 
         # ── CLASIFICACIÓN ───────────────────────────
         if problem_type == "classification":
 
-            # SMOTE solo si hay desbalance real
-            if y is not None and _needs_smote(y):
+            # SMOTE inteligente
+            if (
+                y is not None
+                and SMOTE_CONFIG["enabled"]
+                and (not fast_mode or SMOTE_CONFIG["apply_in_fast_phase"])
+                and _needs_smote(y, SMOTE_CONFIG["imbalance_threshold"])
+            ):
                 steps.append(("smote", SMOTE(random_state=42)))
 
-            # Feature selection SOLO para modelos sensibles
-            if name in ["SVM", "KNN", "MLP"]:
+            # Feature selection selectiva
+            if (
+                FEATURE_SELECTION_CONFIG["enabled"]
+                and name in FEATURE_SELECTION_CONFIG["apply_to_models"]
+            ):
                 steps.append(("select", SelectKBest(f_classif, k=k)))
 
         # ── REGRESIÓN ───────────────────────────────
         else:
-            if name in ["SVM", "KNN", "MLP"]:
+            if (
+                FEATURE_SELECTION_CONFIG["enabled"]
+                and name in FEATURE_SELECTION_CONFIG["apply_to_models"]
+            ):
                 steps.append(("select", SelectKBest(f_regression, k=k)))
 
-        # ── MODELO ──────────────────────────────────
         steps.append(("model", _get_model(name, problem_type, fast_mode)))
 
         pipelines[name] = ImbPipeline(steps)
@@ -185,16 +192,23 @@ def _needs_smote(y, threshold=0.2, min_samples=6):
 # EVALUACIÓN OPTIMIZADA
 # ─────────────────────────────────────────────
 
-def evaluate_models(X_train, y_train, top_k=3):
+def evaluate_models(X_train, y_train, problem_type):
 
-    problem_type = detect_problem_type(y_train)
     n_features = X_train.shape[1]
 
-    # FASE 1: evaluación rápida
-    pipelines_fast = get_pipelines(n_features, problem_type, y_train, fast_mode=True)
+    mode = detect_execution_mode(len(y_train))
+    config = MODEL_CONFIG[mode]
 
-    cv_fast = StratifiedKFold(3, shuffle=True, random_state=42) \
-        if problem_type == "classification" else KFold(3, shuffle=True, random_state=42)
+    # ── FASE 1: rápida ───────────────────────────
+    pipelines_fast = get_pipelines(
+        n_features, problem_type, y_train, fast_mode=True
+    )
+
+    cv_fast = (
+        StratifiedKFold(config["cv_folds_fast"], shuffle=True, random_state=42)
+        if problem_type == "classification"
+        else KFold(config["cv_folds_fast"], shuffle=True, random_state=42)
+    )
 
     scoring = (
         {"f1": "f1_weighted", "acc": "accuracy"}
@@ -206,24 +220,34 @@ def evaluate_models(X_train, y_train, top_k=3):
 
     for name, pipe in pipelines_fast.items():
         try:
-            scores = cross_validate(pipe, X_train, y_train, cv=cv_fast, scoring=scoring, n_jobs=1)
+            scores = cross_validate(
+                pipe, X_train, y_train, cv=cv_fast, scoring=scoring, n_jobs=1
+            )
 
-            metric = scores["test_f1"].mean() if problem_type == "classification" else scores["test_r2"].mean()
+            metric = (
+                scores["test_f1"].mean()
+                if problem_type == "classification"
+                else scores["test_r2"].mean()
+            )
 
             fast_results.append((name, metric))
 
         except Exception as e:
             logger.warning(f"{name} falló en fast CV: {e}")
 
-    # seleccionar top modelos
     fast_results.sort(key=lambda x: x[1], reverse=True)
-    top_models = [m[0] for m in fast_results[:top_k]]
+    top_models = [m[0] for m in fast_results[:config["top_k_models"]]]
 
-    # FASE 2: evaluación completa SOLO top
-    pipelines_full = get_pipelines(n_features, problem_type, y_train, fast_mode=False)
+    # ── FASE 2: completa ─────────────────────────
+    pipelines_full = get_pipelines(
+        n_features, problem_type, y_train, fast_mode=False
+    )
 
-    cv_full = StratifiedKFold(5, shuffle=True, random_state=42) \
-        if problem_type == "classification" else KFold(5, shuffle=True, random_state=42)
+    cv_full = (
+        StratifiedKFold(config["cv_folds_full"], shuffle=True, random_state=42)
+        if problem_type == "classification"
+        else KFold(config["cv_folds_full"], shuffle=True, random_state=42)
+    )
 
     results = []
 
@@ -231,7 +255,9 @@ def evaluate_models(X_train, y_train, top_k=3):
         pipe = pipelines_full[name]
 
         try:
-            scores = cross_validate(pipe, X_train, y_train, cv=cv_full, scoring=scoring, n_jobs=1)
+            scores = cross_validate(
+                pipe, X_train, y_train, cv=cv_full, scoring=scoring, n_jobs=1
+            )
 
             row = {"model": name}
 
@@ -257,10 +283,14 @@ def evaluate_models(X_train, y_train, top_k=3):
 # ENTRENAMIENTO FINAL
 # ─────────────────────────────────────────────
 
-def train_models(X_train, y_train, selected_models):
+def train_models(X_train, y_train, selected_models, problem_type):
 
-    problem_type = detect_problem_type(y_train)
-    pipelines = get_pipelines(X_train.shape[1], problem_type, y_train, fast_mode=False)
+    pipelines = get_pipelines(
+        X_train.shape[1],
+        problem_type,
+        y_train,
+        fast_mode=False
+    )
 
     trained = {}
 
@@ -279,6 +309,23 @@ def train_models(X_train, y_train, selected_models):
 # SELECCIÓN
 # ─────────────────────────────────────────────
 
+def train_model_with_params(X_train, y_train, model_name, params, problem_type):
+    """Entrena un modelo específico con hiperparámetros dados."""
+    n_features = X_train.shape[1]
+
+    pipelines = get_pipelines(n_features, problem_type, y_train, fast_mode=False)
+    pipe = pipelines[model_name]
+
+    # Aplicar parámetros
+    params_prefixed = {f"model__{k}": v for k, v in params.items()}
+    pipe.set_params(**params_prefixed)
+
+    # Entrenar
+    pipe.fit(X_train, y_train)
+
+    return {model_name: pipe}
+
+
 def get_best_model(cv_results, trained_models):
 
     metric = "f1_mean" if "f1_mean" in cv_results.columns else "r2_mean"
@@ -292,9 +339,8 @@ def get_best_model(cv_results, trained_models):
 # EVALUACIÓN FINAL
 # ─────────────────────────────────────────────
 
-def evaluate_trained_models(trained_models, X_test, y_test):
+def evaluate_trained_models(trained_models, X_test, y_test, problem_type):
 
-    problem_type = detect_problem_type(y_test)
     results = []
 
     for name, model in trained_models.items():

@@ -4,6 +4,7 @@ import logging
 
 import shap
 import lime.lime_tabular
+from pipeline.utils import detect_problem_type
 
 logger = logging.getLogger(__name__)
 
@@ -14,22 +15,6 @@ logger = logging.getLogger(__name__)
 SHAP_SAMPLE_SIZE = 100
 SHAP_BACKGROUND_SIZE = 50
 LIME_SAMPLE_SIZE = 1000  # limitar dataset para LIME
-
-
-# ─────────────────────────────────────────────
-# DETECCIÓN DE TIPO
-# ─────────────────────────────────────────────
-
-def detect_problem_type(y: pd.Series) -> str:
-    if y.dtype == "object":
-        return "classification"
-
-    unique_values = y.nunique()
-    if unique_values <= 20 or (unique_values / len(y)) < 0.05:
-        return "classification"
-
-    return "regression"
-
 
 # ─────────────────────────────────────────────
 # UTILIDADES
@@ -75,8 +60,9 @@ def _transform_without_model(pipeline, X: pd.DataFrame) -> pd.DataFrame:
 def compute_shap_values(
     pipeline,
     X_train: pd.DataFrame,
-    y_train: pd.Series,
+    y_train: pd.Series = None,
     label_encoder=None,
+    sample_size: int = SHAP_SAMPLE_SIZE,
 ):
     """
     Versión optimizada:
@@ -85,12 +71,12 @@ def compute_shap_values(
     - Fallback seguro
     """
 
-    problem_type = detect_problem_type(y_train)
+    problem_type = detect_problem_type(y_train) if y_train is not None else "regression"
     estimator = _get_final_estimator(pipeline)
 
     # ── Sampling (CRÍTICO)
     X_sample = X_train.sample(
-        min(SHAP_SAMPLE_SIZE, len(X_train)),
+        min(sample_size, len(X_train)),
         random_state=42
     )
 
@@ -109,31 +95,13 @@ def compute_shap_values(
                 "problem_type": problem_type,
             }
 
-        # ── Caso general (MUY controlado)
-        logger.warning("Usando SHAP Kernel (lento) con sample reducido")
-
-        background = X_transformed.sample(
-            min(SHAP_BACKGROUND_SIZE, len(X_transformed)),
-            random_state=42
-        )
-
-        predict_fn = (
-            pipeline.predict_proba
-            if problem_type == "classification"
-            else pipeline.predict
-        )
-
-        explainer = shap.KernelExplainer(predict_fn, background)
-
-        shap_values = explainer.shap_values(
-            X_transformed,
-            nsamples=100  # limitar cálculo
-        )
+        # ── Caso no soportado → degradar a importance básica
+        logger.warning("SHAP no disponible para este modelo")
 
         return {
-            "shap_values": shap_values,
+            "shap_values": None,
             "feature_names": list(X_transformed.columns),
-            "explainer_type": "KernelExplainer",
+            "explainer_type": "NotAvailable",
             "problem_type": problem_type,
         }
 
@@ -149,7 +117,7 @@ def compute_shap_values(
 def compute_lime_explanation(
     pipeline,
     X_train: pd.DataFrame,
-    y_train: pd.Series,
+    y_train: pd.Series = None,
     label_encoder=None,
     instance_index: int = 0,
     num_features: int = 8,
@@ -160,7 +128,7 @@ def compute_lime_explanation(
     - Evita usar todo X_train (crítico)
     """
 
-    problem_type = detect_problem_type(y_train)
+    problem_type = detect_problem_type(y_train) if y_train is not None else "regression"
 
     # ── Sampleo (CRÍTICO)
     X_sample = X_train.sample(
@@ -195,9 +163,11 @@ def compute_lime_explanation(
                 instance.values,
                 pipeline.predict_proba,
                 num_features=num_features,
+                num_samples=500
             )
 
-            proba = pipeline.predict_proba(instance.values.reshape(1, -1))[0]
+            instance_df = pd.DataFrame([instance.values], columns=feature_names)
+            proba = pipeline.predict_proba(instance_df)[0]
             pred_class = int(np.argmax(proba))
 
             return {
@@ -217,6 +187,7 @@ def compute_lime_explanation(
                 instance.values,
                 pipeline.predict,
                 num_features=num_features,
+                num_samples=500
             )
 
             pred = pipeline.predict(instance.values.reshape(1, -1))[0]
