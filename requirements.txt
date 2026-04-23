@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pandas
+numpy
+scikit-learn
+imbalanced-learn
+lightgbm
+shap
+lime
+reportlab
+python-multipart
