@@ -270,8 +270,12 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
             target=target,
             best_model=best_name,
             metrics_df=test_metrics,
-            lime_text=lime_text,
+            lime_text=lime_text.get("text") if isinstance(lime_text, dict) else lime_text,
             problem_type=problem_type,
+            shap_importance=shap_importance,          # lista de {feature, importance}
+            preprocessing=preprocessing_report,       # dict de get_preprocessing_report()
+            elapsed_seconds=(datetime.now() - start_time).total_seconds(),
+            probabilities=lime_text.get("probabilities") if isinstance(lime_text, dict) else None,
         )
 
         # ── 10. Resultado
