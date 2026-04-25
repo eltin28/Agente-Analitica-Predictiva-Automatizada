@@ -1,0 +1,135 @@
+{
+  "task_id": "91650b2e-a0bb-4f71-b3bb-9cc84c5dd867",
+  "status": "completed",
+  "filename": "titanic.csv",
+  "file_size_mb": 0.06,
+  "optimize": false,
+  "created_at": "2026-04-24T14:29:55.728535",
+  "started_at": "2026-04-24T14:29:57.970524",
+  "finished_at": "2026-04-24T14:30:07.541212",
+  "result": {
+    "status": "success",
+    "run_info": {
+      "file": "91650b2e-a0bb-4f71-b3bb-9cc84c5dd867_titanic.csv",
+      "target": "Survived",
+      "problem_type": "classification",
+      "best_model": "RandomForest",
+      "elapsed_seconds": 9.57
+    },
+    "preprocessing": {
+      "numeric_features": [
+        "Pclass",
+        "Age",
+        "SibSp",
+        "Parch",
+        "Fare"
+      ],
+      "nominal_features": [],
+      "ordinal_features": [
+        "Sex",
+        "Embarked"
+      ],
+      "dropped_high_missing": [
+        "Cabin"
+      ],
+      "dropped_high_cardinality": [
+        "Ticket"
+      ],
+      "dropped_id_like": [
+        "PassengerId",
+        "Name"
+      ],
+      "total_input_features": 11,
+      "total_used_features": 7
+    },
+    "model_performance": {
+      "cv_results": [
+        {
+          "model": "RandomForest",
+          "mean_score": 0.815109248232611,
+          "std_score": 0.014191915049012791
+        },
+        {
+          "model": "LightGBM",
+          "mean_score": 0.8144041111096698,
+          "std_score": 0.02876214489363918
+        },
+        {
+          "model": "SVM",
+          "mean_score": 0.8127555207183279,
+          "std_score": 0.02421799186293612
+        },
+        {
+          "model": "MLP",
+          "mean_score": 0.8078886612352839,
+          "std_score": 0.031773976868847684
+        },
+        {
+          "model": "KNN",
+          "mean_score": 0.7836757917653447,
+          "std_score": 0.027118068057758273
+        },
+        {
+          "model": "DecisionTree",
+          "mean_score": 0.7764826304637772,
+          "std_score": 0.025867162479730067
+        }
+      ],
+      "test_metrics": [
+        {
+          "model": "RandomForest",
+          "accuracy": 0.7932960893854749,
+          "f1": 0.793009351457483
+        },
+        {
+          "model": "LightGBM",
+          "accuracy": 0.8044692737430168,
+          "f1": 0.804198035162484
+        },
+        {
+          "model": "SVM",
+          "accuracy": 0.8268156424581006,
+          "f1": 0.8241775137253613
+        },
+        {
+          "model": "MLP",
+          "accuracy": 0.7597765363128491,
+          "f1": 0.7550927642424585
+        },
+        {
+          "model": "KNN",
+          "accuracy": 0.776536312849162,
+          "f1": 0.7735809226547244
+        },
+        {
+          "model": "DecisionTree",
+          "accuracy": 0.8100558659217877,
+          "f1": 0.808916808614549
+        },
+        {
+          "model": "RandomForest (final)",
+          "accuracy": 0.7932960893854749,
+          "f1": 0.793009351457483
+        }
+      ]
+    },
+    "explainability": {
+      "lime": {
+        "text": "f_5 <= 0.00: 0.3444\n-0.37 < f_0 <= 0.83: -0.1339\nf_1 <= -0.56: 0.1279\nf_6 <= 1.00: 0.0572\n-0.51 < f_2 <= 0.57: -0.0379\n-0.40 < f_4 <= 0.00: -0.0053\nf_3 > -0.48: -0.0023"
+      },
+      "shap": {
+        "feature_importance": [],
+        "status": "Per-column arrays must each be 1-dimensional"
+      }
+    },
+    "optimization": {
+      "enabled": false,
+      "best_params": null
+    },
+    "output_files": {
+      "pdf": "outputs\\tasks_output\\91650b2e-a0bb-4f71-b3bb-9cc84c5dd867\\report.pdf",
+      "json": "outputs\\tasks_output\\91650b2e-a0bb-4f71-b3bb-9cc84c5dd867\\results.json"
+    }
+  },
+  "error": null
+}

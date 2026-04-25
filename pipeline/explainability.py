@@ -1,268 +1,242 @@
+# pipeline/explainability.py
+
 import numpy as np
 import pandas as pd
 import logging
 
 import shap
-import lime.lime_tabular
-from pipeline.utils import detect_problem_type
+from lime.lime_tabular import LimeTabularExplainer
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# CONFIG (CLAVE PARA PERFORMANCE)
-# ─────────────────────────────────────────────
-
-SHAP_SAMPLE_SIZE = 100
-SHAP_BACKGROUND_SIZE = 50
-LIME_SAMPLE_SIZE = 1000  # limitar dataset para LIME
 
 # ─────────────────────────────────────────────
 # UTILIDADES
 # ─────────────────────────────────────────────
 
-def _get_final_estimator(pipeline):
-    return pipeline.named_steps.get("model", pipeline)
-
-
-def _is_tree_based(estimator) -> bool:
-    name = type(estimator).__name__.lower()
-    return any(x in name for x in ["tree", "forest", "lgbm", "xgb"])
-
-
-def _transform_without_model(pipeline, X: pd.DataFrame) -> pd.DataFrame:
+def _split_pipeline(pipeline):
     """
-    Ejecuta SOLO preprocessing (sin modelo).
-    Mucho más eficiente que recomputar múltiples veces.
+    Separa preprocessor y modelo desde Pipeline.
     """
-    X_out = X.copy()
+    preprocessor = pipeline.named_steps.get("preprocessor")
+    model = pipeline.named_steps.get("model")
 
-    for name, step in pipeline.named_steps.items():
-        if name == "model":
-            break
-        if name == "smote":
-            continue
-        if hasattr(step, "transform"):
-            try:
-                X_out = step.transform(X_out)
-            except Exception as e:
-                logger.warning(f"Transform falló en {name}: {e}")
+    if preprocessor is None or model is None:
+        raise ValueError("Pipeline inválido: faltan 'preprocessor' o 'model'")
 
-    if isinstance(X_out, np.ndarray):
-        return pd.DataFrame(X_out)
+    return preprocessor, model
 
-    return X_out
+
+def _transform_data(preprocessor, X):
+    """
+    Aplica transformación y devuelve DataFrame con nombres de columnas robustos.
+    """
+
+    # Transformación
+    X_t = preprocessor.transform(X)
+
+    # Convertir a array primero (evita problemas después)
+    if hasattr(X_t, "toarray"):
+        X_t = X_t.toarray()
+    X_t = np.array(X_t, dtype=float)
+
+    feature_names = None
+
+    try:
+        raw_names = preprocessor.get_feature_names_out()
+
+        cleaned = []
+        for name in raw_names:
+            name = name.split("__", 1)[-1] if "__" in name else name
+            cleaned.append(name)
+
+        # Validación fuerte
+        if any(n.startswith(("x", "f_")) for n in cleaned):
+            raise ValueError("Feature names poco interpretables")
+
+        feature_names = cleaned
+
+    except Exception:
+        input_cols = list(X.columns)
+
+        # Caso ideal: misma cantidad
+        if len(input_cols) == X_t.shape[1]:
+            feature_names = input_cols
+
+        else:
+            # fallback controlado
+            feature_names = [
+                f"{input_cols[i % len(input_cols)]}_{i}"
+                for i in range(X_t.shape[1])
+            ]
+
+    return pd.DataFrame(X_t, columns=feature_names)
 
 
 # ─────────────────────────────────────────────
-# SHAP (OPTIMIZADO)
+# SHAP
 # ─────────────────────────────────────────────
 
 def compute_shap_values(
     pipeline,
-    X_train: pd.DataFrame,
-    y_train: pd.Series = None,
-    label_encoder=None,
-    sample_size: int = SHAP_SAMPLE_SIZE,
+    X_train,
+    y_train=None,
+    sample_size=100
 ):
     """
-    Versión optimizada:
-    - Sampleo controlado
-    - Evita KernelExplainer en la medida de lo posible
-    - Fallback seguro
+    Calcula SHAP usando modelo dentro del pipeline.
+    Maneja correctamente clasificación binaria, multiclase y regresión.
     """
 
-    problem_type = detect_problem_type(y_train) if y_train is not None else "regression"
-    estimator = _get_final_estimator(pipeline)
-
-    # ── Sampling (CRÍTICO)
-    X_sample = X_train.sample(
-        min(sample_size, len(X_train)),
-        random_state=42
-    )
-
     try:
-        X_transformed = _transform_without_model(pipeline, X_sample)
+        preprocessor, model = _split_pipeline(pipeline)
 
-        # ── Caso rápido (modelos árbol)
-        if _is_tree_based(estimator):
-            explainer = shap.TreeExplainer(estimator)
+        X_sample = X_train.sample(
+            min(sample_size, len(X_train)),
+            random_state=42
+        )
+
+        X_transformed = _transform_data(preprocessor, X_sample)
+
+        # Usar TreeExplainer para modelos de árbol (más estable que Explainer genérico)
+        model_class = type(model).__name__
+        is_tree = any(k in model_class for k in ("Forest", "Tree", "LGBM", "XGB", "Gradient"))
+
+        if is_tree:
+            explainer = shap.TreeExplainer(model)
             shap_values = explainer.shap_values(X_transformed)
+        elif hasattr(model, "predict_proba"):
+            explainer = shap.Explainer(model, X_transformed)
+            shap_obj = explainer(X_transformed)
+            shap_values = shap_obj.values
+        else:
+            explainer = shap.Explainer(model.predict, X_transformed)
+            shap_obj = explainer(X_transformed)
+            shap_values = shap_obj.values
 
-            return {
-                "shap_values": shap_values,
-                "feature_names": list(X_transformed.columns),
-                "explainer_type": "TreeExplainer",
-                "problem_type": problem_type,
-            }
+        # ── Normalizar a shape (n_samples, n_features) ──────────────────
+        # TreeExplainer en clasificación binaria devuelve lista [neg, pos]
+        # o array 3D (n_samples, n_features, n_classes)
+        if isinstance(shap_values, list):
+            # Lista de arrays por clase → tomar clase positiva (índice 1)
+            shap_values = shap_values[1] if len(shap_values) == 2 else shap_values[0]
+        elif shap_values.ndim == 3:
+            # (n_samples, n_features, n_classes) → tomar clase 1
+            shap_values = shap_values[:, :, 1]
 
-        # ── Caso no soportado → degradar a importance básica
-        logger.warning("SHAP no disponible para este modelo")
+        # Asegurar 2D float
+        shap_values = np.array(shap_values, dtype=float)
+        if shap_values.ndim == 1:
+            shap_values = shap_values.reshape(1, -1)
 
         return {
-            "shap_values": None,
+            "values": shap_values,
             "feature_names": list(X_transformed.columns),
-            "explainer_type": "NotAvailable",
-            "problem_type": problem_type,
         }
 
     except Exception as e:
-        logger.error(f"SHAP falló: {e}")
-        return {"error": str(e), "shap_values": None}
+        logger.warning(f"SHAP error: {e}")
+        return {"error": str(e)}
+
+
+def get_shap_feature_importance(shap_result):
+    """
+    Devuelve importancia global de features.
+    Espera shap_result["values"] con shape (n_samples, n_features).
+    """
+
+    if "error" in shap_result:
+        return []
+
+    values = np.array(shap_result["values"], dtype=float)
+    feature_names = shap_result["feature_names"]
+
+    # Garantizar 2D
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+    elif values.ndim == 3:
+        values = values[:, :, 1]
+
+    importance = np.abs(values).mean(axis=0)  # shape: (n_features,)
+
+    df = pd.DataFrame({
+        "feature": feature_names,
+        "importance": importance
+    }).sort_values(by="importance", ascending=False)
+
+    return df.to_dict(orient="records")
 
 
 # ─────────────────────────────────────────────
-# LIME (OPTIMIZADO)
+# LIME
 # ─────────────────────────────────────────────
 
 def compute_lime_explanation(
     pipeline,
-    X_train: pd.DataFrame,
-    y_train: pd.Series = None,
-    label_encoder=None,
-    instance_index: int = 0,
-    num_features: int = 8,
+    X_train,
+    y_train,
+    sample_index=0
 ):
     """
-    Optimizado:
-    - Limita dataset de entrenamiento de LIME
-    - Evita usar todo X_train (crítico)
+    LIME sobre datos transformados (numéricos) pero manteniendo nombres interpretables.
     """
 
-    problem_type = detect_problem_type(y_train) if y_train is not None else "regression"
-
-    # ── Sampleo (CRÍTICO)
-    X_sample = X_train.sample(
-        min(LIME_SAMPLE_SIZE, len(X_train)),
-        random_state=42
-    )
-
-    if instance_index >= len(X_sample):
-        instance_index = 0
-
-    feature_names = X_sample.columns.tolist()
-    instance = X_sample.iloc[instance_index]
-
-    mode = "classification" if problem_type == "classification" else "regression"
-
-    explainer = lime.lime_tabular.LimeTabularExplainer(
-        training_data=X_sample.values,
-        feature_names=feature_names,
-        mode=mode,
-        random_state=42,
-    )
-
     try:
-        if problem_type == "classification":
+        preprocessor, model = _split_pipeline(pipeline)
 
-            class_names = (
-                [str(c) for c in label_encoder.classes_]
-                if label_encoder else None
-            )
+        # Transformación segura (todo numérico)
+        X_transformed = _transform_data(preprocessor, X_train)
 
+        is_classification = hasattr(model, "predict_proba")
+
+        explainer = LimeTabularExplainer(
+            training_data=X_transformed.values,
+            feature_names=X_transformed.columns.tolist(),
+            mode="classification" if is_classification else "regression",
+            discretize_continuous=True,
+        )
+
+        instance = X_transformed.iloc[sample_index].values
+
+        if is_classification:
             exp = explainer.explain_instance(
-                instance.values,
-                pipeline.predict_proba,
-                num_features=num_features,
-                num_samples=500
+                instance,
+                model.predict_proba,
+                num_features=10
             )
-
-            instance_df = pd.DataFrame([instance.values], columns=feature_names)
-            proba = pipeline.predict_proba(instance_df)[0]
-            pred_class = int(np.argmax(proba))
-
-            return {
-                "type": "classification",
-                "predicted_class": (
-                    class_names[pred_class] if class_names else pred_class
-                ),
-                "probabilities": {
-                    (class_names[i] if class_names else i): float(p)
-                    for i, p in enumerate(proba)
-                },
-                "explanation": exp.as_list(),
-            }
-
+            probs = model.predict_proba([instance])[0].tolist()
         else:
             exp = explainer.explain_instance(
-                instance.values,
-                pipeline.predict,
-                num_features=num_features,
-                num_samples=500
+                instance,
+                model.predict,
+                num_features=10
             )
+            probs = None
 
-            pred = pipeline.predict(instance.values.reshape(1, -1))[0]
-
-            return {
-                "type": "regression",
-                "prediction": float(pred),
-                "explanation": exp.as_list(),
-            }
+        return {
+            "exp": exp,
+            "probabilities": probs
+        }
 
     except Exception as e:
-        logger.error(f"LIME falló: {e}")
-        return {"error": str(e), "explanation": []}
+        logger.warning(f"LIME error: {e}")
+        return None
 
 
-# ─────────────────────────────────────────────
-# TEXTO LIME
-# ─────────────────────────────────────────────
-
-def generate_lime_text_explanation(lime_result: dict) -> str:
-
-    if "error" in lime_result:
-        return f"No se pudo generar explicación: {lime_result['error']}"
-
-    lines = []
-
-    if lime_result.get("type") == "classification":
-        lines.append(f"Clase predicha: {lime_result.get('predicted_class')}")
-        lines.append("")
-
-        probs = lime_result.get("probabilities", {})
-        if probs:
-            lines.append("Probabilidades:")
-            for k, v in probs.items():
-                lines.append(f"{k}: {v:.2%}")
-            lines.append("")
-    else:
-        lines.append(f"Valor predicho: {lime_result.get('prediction')}")
-        lines.append("")
-
-    for feature, weight in lime_result.get("explanation", []):
-        direction = "aumenta" if weight > 0 else "disminuye"
-        lines.append(f"{feature} → {direction} ({round(weight,4)})")
-
-    return "\n".join(lines)
-
-
-# ─────────────────────────────────────────────
-# SHAP IMPORTANCE
-# ─────────────────────────────────────────────
-
-def get_shap_feature_importance(shap_result: dict):
-
-    shap_values = shap_result.get("shap_values")
-    feature_names = shap_result.get("feature_names", [])
-
-    if shap_values is None:
-        return []
+def generate_lime_text_explanation(lime_result):
+    if lime_result is None:
+        return None
 
     try:
-        if isinstance(shap_values, list):
-            importance = np.mean(
-                [np.abs(sv).mean(axis=0) for sv in shap_values],
-                axis=0
-            )
-        else:
-            importance = np.abs(shap_values).mean(axis=0)
+        exp = lime_result["exp"]
+        explanation = exp.as_list()
+        lines = [f"{feature}: {weight:.4f}" for feature, weight in explanation]
 
-        idx = np.argsort(importance)[::-1]
-
-        return [
-            {"feature": feature_names[i], "importance": float(importance[i])}
-            for i in idx
-        ]
+        return {
+            "text": "\n".join(lines),
+            "probabilities": lime_result.get("probabilities")
+        }
 
     except Exception as e:
-        logger.warning(f"SHAP importance falló: {e}")
-        return []
+        logger.warning(f"LIME text error: {e}")
+        return None

@@ -1,0 +1,20 @@
+{
+  "task_id": "1d2343a9-0cbc-432f-b122-a14896a83b8b",
+  "status": "failed",
+  "filename": "titanic.csv",
+  "file_size_mb": 0.06,
+  "optimize": false,
+  "created_at": "2026-04-23T18:35:30.214782",
+  "started_at": "2026-04-23T18:35:36.264518",
+  "finished_at": "2026-04-23T18:35:36.318869",
+  "result": {
+    "status": "error",
+    "run_info": {
+      "file": "1d2343a9-0cbc-432f-b122-a14896a83b8b_titanic.csv",
+      "elapsed_seconds": 0.04
+    },
+    "error": "not enough values to unpack (expected 7, got 6)",
+    "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\ASUS\\Documents\\IA\\Agente\\agent\\run_analysis.py\", line 105, in main\n    (\n    ^\n    ...<5 lines>...\n    ) = preprocess_data(df, target, problem_type)\n    ^\nValueError: not enough values to unpack (expected 7, got 6)\n"
+  },
+  "error": null
+}

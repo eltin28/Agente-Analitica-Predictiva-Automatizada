@@ -1,0 +1,15 @@
+{
+  "task_id": "acb82d21-ec99-43ce-97f7-a0f428ff17df",
+  "status": "failed",
+  "filename": "titanic.csv",
+  "file_size_mb": 0.06,
+  "optimize": false,
+  "created_at": "2026-04-23T19:40:46.475891",
+  "started_at": "2026-04-23T19:40:52.424332",
+  "finished_at": "2026-04-23T19:40:52.458435",
+  "result": {
+    "status": "error",
+    "error": "detect_column_types() takes 1 positional argument but 2 were given"
+  },
+  "error": null
+}

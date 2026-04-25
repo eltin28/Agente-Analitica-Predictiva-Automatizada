@@ -20,6 +20,7 @@ Flujo:
 """
 
 import os
+import sys
 import json
 import uuid
 import logging
@@ -33,6 +34,7 @@ from fastapi.responses import FileResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+sys.path.append(os.getcwd())
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -109,29 +111,30 @@ def _count_active_tasks() -> int:
 # FUNCIÓN QUE CORRE EN EL PROCESO SEPARADO
 # ─────────────────────────────────────────────
 
-def _run_pipeline_in_process(
-    task_id: str,
-    file_path: str,
-    optimize: bool
-) -> None:
-    """
-    Ejecutada en proceso hijo. Importa el pipeline aquí para evitar
-    problemas de serialización con fork en Windows.
-    """
-    from run_analysis import main as run_pipeline
+def _run_pipeline_in_process(task_id: str, file_path: str, optimize: bool) -> None:
+    import traceback
 
-    task_data = _read_task(task_id) or {}
+    print(f"[TASK {task_id}] PROCESS START")
 
     try:
+        from run_analysis import main as run_pipeline
+
+        task_data = _read_task(task_id) or {}
+
         task_data.update({
             "status": "running",
             "started_at": datetime.utcnow().isoformat(),
         })
         _write_task(task_id, task_data)
 
+        print(f"[TASK {task_id}] RUNNING PIPELINE")
+
         result = run_pipeline(file_path, use_optuna=optimize)
 
+        print(f"[TASK {task_id}] PIPELINE DONE")
+
         final_status = "completed" if result.get("status") == "success" else "failed"
+
         task_data.update({
             "status": final_status,
             "finished_at": datetime.utcnow().isoformat(),
@@ -140,7 +143,9 @@ def _run_pipeline_in_process(
         _write_task(task_id, task_data)
 
     except Exception as e:
-        import traceback
+        print(f"[TASK {task_id}] ERROR: {e}")
+        print(traceback.format_exc())
+
         task_data.update({
             "status": "failed",
             "finished_at": datetime.utcnow().isoformat(),
@@ -148,14 +153,6 @@ def _run_pipeline_in_process(
             "traceback": traceback.format_exc(),
         })
         _write_task(task_id, task_data)
-
-    finally:
-        # Limpiar archivo subido
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except Exception:
-            pass
 
 
 # ─────────────────────────────────────────────

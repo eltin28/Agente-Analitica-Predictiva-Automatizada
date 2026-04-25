@@ -1,0 +1,20 @@
+{
+  "task_id": "ed298d81-59bb-4778-9c5a-56e820a6c90d",
+  "status": "failed",
+  "filename": "titanic.csv",
+  "file_size_mb": 0.06,
+  "optimize": false,
+  "created_at": "2026-04-23T18:37:01.162096",
+  "started_at": "2026-04-23T18:37:06.766396",
+  "finished_at": "2026-04-23T18:37:06.993316",
+  "result": {
+    "status": "error",
+    "run_info": {
+      "file": "ed298d81-59bb-4778-9c5a-56e820a6c90d_titanic.csv",
+      "elapsed_seconds": 0.21
+    },
+    "error": "'f1_mean'",
+    "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\ASUS\\Documents\\IA\\Agente\\agent\\run_analysis.py\", line 116, in main\n    cv_results = evaluate_models(X_train, y_train, problem_type)\n  File \"C:\\Users\\ASUS\\Documents\\IA\\Agente\\agent\\pipeline\\modeling.py\", line 276, in evaluate_models\n    return pd.DataFrame(results).sort_values(\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^\n        by=\"f1_mean\" if problem_type == \"classification\" else \"r2_mean\",\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n        ascending=False\n        ^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"C:\\Users\\ASUS\\Documents\\IA\\Agente\\venv\\Lib\\site-packages\\pandas\\core\\frame.py\", line 8347, in sort_values\n    k = self._get_label_or_level_values(by[0], axis=axis)\n  File \"C:\\Users\\ASUS\\Documents\\IA\\Agente\\venv\\Lib\\site-packages\\pandas\\core\\generic.py\", line 1776, in _get_label_or_level_values\n    raise KeyError(key)\nKeyError: 'f1_mean'\n"
+  },
+  "error": null
+}

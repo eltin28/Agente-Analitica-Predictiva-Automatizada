@@ -2,383 +2,252 @@
 
 import pandas as pd
 import numpy as np
-import logging
 
-from sklearn.model_selection import cross_validate, StratifiedKFold, KFold
-from sklearn.feature_selection import SelectKBest, f_classif, f_regression
+from sklearn.base import clone
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 
-from pipeline.config import (
-    detect_execution_mode,
-    MODEL_CONFIG,
-    SMOTE_CONFIG,
-    FEATURE_SELECTION_CONFIG
-)
+# Modelos
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.neural_network import MLPClassifier, MLPRegressor
 
-# Clasificación
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.neural_network import MLPClassifier
+try:
+    from lightgbm import LGBMClassifier, LGBMRegressor
+    HAS_LGBM = True
+except ImportError:
+    HAS_LGBM = False
 
-# Regresión
-from sklearn.neighbors import KNeighborsRegressor
-from sklearn.svm import SVR
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.neural_network import MLPRegressor
-
-from sklearn.metrics import (
-    accuracy_score, f1_score,
-    classification_report,
-    mean_squared_error, mean_absolute_error, r2_score
-)
-
-from imblearn.pipeline import Pipeline as ImbPipeline
-from imblearn.over_sampling import SMOTE
-
-import lightgbm as lgb
-
-from pipeline.preprocessing import CorrelationFilter
-from pipeline.utils import detect_problem_type
-
-logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
-# CONFIGURACIONES RÁPIDAS vs FINALES
+# FACTORY (OCP)
 # ─────────────────────────────────────────────
 
-def _get_model(model_name, problem_type, fast_mode=True):
+def get_model_instance(model_name: str, problem_type: str):
+    """
+    Devuelve una instancia NUEVA del modelo.
+    Nunca reutilizar instancias (evita efectos colaterales).
+
+    LightGBM usa verbose=-1 para suprimir logs internos y
+    feature_name='auto' para no depender de nombres de columnas
+    (evita el warning "X does not have valid feature names").
+    MLP usa max_iter=1000 para garantizar convergencia.
+    """
 
     if problem_type == "classification":
+        models = {
+            "RandomForest": RandomForestClassifier(random_state=42),
+            "DecisionTree": DecisionTreeClassifier(random_state=42),
+            "SVM": SVC(probability=True),
+            "KNN": KNeighborsClassifier(),
+            "MLP": MLPClassifier(
+                        max_iter=1000,
+                        early_stopping=True,
+                        n_iter_no_change=10,
+                        random_state=42
+                    ),
+        }
 
-        if model_name == "DecisionTree":
-            return DecisionTreeClassifier(random_state=42)
-
-        if model_name == "KNN":
-            return KNeighborsClassifier(n_neighbors=5)
-
-        if model_name == "SVM":
-            return SVC(C=1.0, random_state=42)
-
-        if model_name == "RandomForest":
-            return RandomForestClassifier(
-                n_estimators=100 if fast_mode else 300,
-                max_depth=10 if fast_mode else None,
-                n_jobs=-1,
-                random_state=42
-            )
-
-        if model_name == "LightGBM":
-            return lgb.LGBMClassifier(
-                n_estimators=100 if fast_mode else 300,
-                learning_rate=0.1 if fast_mode else 0.05,
+        if HAS_LGBM:
+            models["LightGBM"] = LGBMClassifier(
                 random_state=42,
-                verbose=-1
-            )
-
-        if model_name == "MLP":
-            return MLPClassifier(
-                max_iter=200 if fast_mode else 500,
-                early_stopping=True,
-                random_state=42
+                verbose=-1,          # silencia todos los logs de LightGBM
             )
 
     else:
+        models = {
+            "RandomForest": RandomForestRegressor(random_state=42),
+            "DecisionTree": DecisionTreeRegressor(random_state=42),
+            "SVM": SVR(),
+            "KNN": KNeighborsRegressor(),
+            "MLP": MLPRegressor(
+                        max_iter=1000,
+                        early_stopping=True,
+                        n_iter_no_change=10,
+                        random_state=42
+                    ),
+        }
 
-        if model_name == "DecisionTree":
-            return DecisionTreeRegressor(random_state=42)
-
-        if model_name == "KNN":
-            return KNeighborsRegressor(n_neighbors=5)
-
-        if model_name == "SVM":
-            return SVR(C=1.0)
-
-        if model_name == "RandomForest":
-            return RandomForestRegressor(
-                n_estimators=100 if fast_mode else 300,
-                max_depth=10 if fast_mode else None,
-                n_jobs=-1,
-                random_state=42
-            )
-
-        if model_name == "LightGBM":
-            return lgb.LGBMRegressor(
-                n_estimators=100 if fast_mode else 300,
-                learning_rate=0.1 if fast_mode else 0.05,
+        if HAS_LGBM:
+            models["LightGBM"] = LGBMRegressor(
                 random_state=42,
-                verbose=-1
+                verbose=-1,
             )
 
-        if model_name == "MLP":
-            return MLPRegressor(
-                max_iter=200 if fast_mode else 500,
-                early_stopping=True,
-                random_state=42
-            )
+    if model_name not in models:
+        raise ValueError(f"Modelo no soportado: {model_name}")
+
+    return models[model_name]
+
+
+def get_models(problem_type: str):
+    """
+    Retorna lista de nombres de modelos disponibles.
+    """
+    base = ["RandomForest", "DecisionTree", "SVM", "KNN", "MLP"]
+    if HAS_LGBM:
+        base.append("LightGBM")
+    return base
 
 
 # ─────────────────────────────────────────────
-# PIPELINES
+# PIPELINE
 # ─────────────────────────────────────────────
 
-def get_pipelines(n_features, problem_type, y=None, fast_mode=True):
-
-    # Validar y para evitar error en detect_execution_mode
-    n_samples = len(y) if y is not None else 1000
-    mode = detect_execution_mode(n_samples)
-    config = MODEL_CONFIG.get(mode, MODEL_CONFIG.get(list(MODEL_CONFIG.keys())[0]))
-
-    model_names = config["models"] if config else ["DecisionTree", "KNN", "RandomForest"]
-
-    # Feature selection dinámico
-    k = max(
-        FEATURE_SELECTION_CONFIG["min_features"],
-        int(n_features * FEATURE_SELECTION_CONFIG["ratio"])
-    )
-    k = min(k, n_features)
-
-    pipelines = {}
-
-    for name in model_names:
-
-        steps = [("corr_filter", CorrelationFilter())]
-
-        # ── CLASIFICACIÓN ───────────────────────────
-        if problem_type == "classification":
-
-            # SMOTE inteligente
-            if (
-                y is not None
-                and SMOTE_CONFIG["enabled"]
-                and (not fast_mode or SMOTE_CONFIG["apply_in_fast_phase"])
-                and _needs_smote(y, SMOTE_CONFIG["imbalance_threshold"])
-            ):
-                steps.append(("smote", SMOTE(random_state=42)))
-
-            # Feature selection selectiva
-            if (
-                FEATURE_SELECTION_CONFIG["enabled"]
-                and name in FEATURE_SELECTION_CONFIG["apply_to_models"]
-            ):
-                steps.append(("select", SelectKBest(f_classif, k=k)))
-
-        # ── REGRESIÓN ───────────────────────────────
-        else:
-            if (
-                FEATURE_SELECTION_CONFIG["enabled"]
-                and name in FEATURE_SELECTION_CONFIG["apply_to_models"]
-            ):
-                steps.append(("select", SelectKBest(f_regression, k=k)))
-
-        steps.append(("model", _get_model(name, problem_type, fast_mode)))
-
-        pipelines[name] = ImbPipeline(steps)
-
-    return pipelines
-
-def _needs_smote(y, threshold=0.2, min_samples=6):
-    values, counts = np.unique(y, return_counts=True)
-    ratios = counts / counts.sum()
-
-    # Evitar errores internos de SMOTE (k_neighbors=5)
-    if counts.min() < min_samples:
-        return False
-
-    return ratios.min() < threshold
-
-# ─────────────────────────────────────────────
-# EVALUACIÓN OPTIMIZADA
-# ─────────────────────────────────────────────
-
-def evaluate_models(X_train, y_train, problem_type):
-
-    n_features = X_train.shape[1]
-
-    mode = detect_execution_mode(len(y_train))
-    config = MODEL_CONFIG[mode]
-
-    # ── FASE 1: rápida ───────────────────────────
-    pipelines_fast = get_pipelines(
-        n_features, problem_type, y_train, fast_mode=True
-    )
-
-    cv_fast = (
-        StratifiedKFold(config["cv_folds_fast"], shuffle=True, random_state=42)
-        if problem_type == "classification"
-        else KFold(config["cv_folds_fast"], shuffle=True, random_state=42)
-    )
-
-    scoring = (
-        {"f1": "f1_weighted", "acc": "accuracy"}
-        if problem_type == "classification"
-        else {"r2": "r2", "rmse": "neg_root_mean_squared_error"}
-    )
-
-    fast_results = []
-
-    for name, pipe in pipelines_fast.items():
-        try:
-            scores = cross_validate(
-                pipe, X_train, y_train, cv=cv_fast, scoring=scoring, n_jobs=1
-            )
-
-            metric = (
-                scores["test_f1"].mean()
-                if problem_type == "classification"
-                else scores["test_r2"].mean()
-            )
-
-            fast_results.append((name, metric))
-
-        except Exception as e:
-            logger.warning(f"{name} falló en fast CV: {e}")
-
-    fast_results.sort(key=lambda x: x[1], reverse=True)
-    top_models = [m[0] for m in fast_results[:config["top_k_models"]]]
-
-    # ── FASE 2: completa ─────────────────────────
-    pipelines_full = get_pipelines(
-        n_features, problem_type, y_train, fast_mode=False
-    )
-
-    cv_full = (
-        StratifiedKFold(config["cv_folds_full"], shuffle=True, random_state=42)
-        if problem_type == "classification"
-        else KFold(config["cv_folds_full"], shuffle=True, random_state=42)
-    )
-
-    results = []
-
-    for name in top_models:
-        pipe = pipelines_full[name]
-
-        try:
-            scores = cross_validate(
-                pipe, X_train, y_train, cv=cv_full, scoring=scoring, n_jobs=1
-            )
-
-            row = {"model": name}
-
-            if problem_type == "classification":
-                row["f1_mean"] = scores["test_f1"].mean()
-                row["accuracy_mean"] = scores["test_acc"].mean()
-            else:
-                row["r2_mean"] = scores["test_r2"].mean()
-                row["rmse_mean"] = -scores["test_rmse"].mean()
-
-            results.append(row)
-
-        except Exception as e:
-            logger.warning(f"{name} falló en full CV: {e}")
-
-    return pd.DataFrame(results).sort_values(
-        by="f1_mean" if problem_type == "classification" else "r2_mean",
-        ascending=False
-    )
+def build_pipeline(model, preprocessor):
+    return Pipeline([
+        ("preprocessor", preprocessor),
+        ("model", model)
+    ])
 
 
 # ─────────────────────────────────────────────
-# ENTRENAMIENTO FINAL
+# TRAINING
 # ─────────────────────────────────────────────
 
-def train_models(X_train, y_train, selected_models, problem_type):
+def train_single_model(X, y, model_name, problem_type, preprocessor, params=None):
+    model = get_model_instance(model_name, problem_type)
 
-    pipelines = get_pipelines(
-        X_train.shape[1],
-        problem_type,
-        y_train,
-        fast_mode=False
-    )
+    if params:
+        model.set_params(**params)
 
+    pipeline = build_pipeline(model, preprocessor)
+    pipeline.fit(X, y)
+
+    return pipeline
+
+
+def train_models(X, y, model_names, problem_type, preprocessor):
     trained = {}
 
-    for name in selected_models:
-        try:
-            pipe = pipelines[name]
-            pipe.fit(X_train, y_train)
-            trained[name] = pipe
-        except Exception as e:
-            logger.warning(f"{name} falló entrenamiento: {e}")
+    for name in model_names:
+        pipeline = train_single_model(
+            X, y, name, problem_type, preprocessor
+        )
+        trained[name] = pipeline
 
     return trained
 
 
-# ─────────────────────────────────────────────
-# SELECCIÓN
-# ─────────────────────────────────────────────
-
-def train_model_with_params(X_train, y_train, model_name, params, problem_type):
-    """Entrena un modelo específico con hiperparámetros dados."""
-    n_features = X_train.shape[1]
-
-    pipelines = get_pipelines(n_features, problem_type, y_train, fast_mode=False)
-    pipe = pipelines[model_name]
-
-    # Aplicar parámetros
-    params_prefixed = {f"model__{k}": v for k, v in params.items()}
-    pipe.set_params(**params_prefixed)
-
-    # Entrenar
-    pipe.fit(X_train, y_train)
-
-    return {model_name: pipe}
-
-
-def get_best_model(cv_results, trained_models):
-
-    metric = "f1_mean" if "f1_mean" in cv_results.columns else "r2_mean"
-
-    best_row = cv_results.sort_values(by=metric, ascending=False).iloc[0]
-
-    return best_row["model"], trained_models[best_row["model"]]
+def train_model_with_params(X, y, model_name, params, problem_type, preprocessor):
+    pipeline = train_single_model(
+        X, y, model_name, problem_type, preprocessor, params
+    )
+    return {model_name: pipeline}
 
 
 # ─────────────────────────────────────────────
-# EVALUACIÓN FINAL
+# EVALUACIÓN (CV)
 # ─────────────────────────────────────────────
 
-def evaluate_trained_models(trained_models, X_test, y_test, problem_type):
+def _get_cv(problem_type):
+    if problem_type == "classification":
+        return StratifiedKFold(5, shuffle=True, random_state=42), "f1_weighted"
+    else:
+        return KFold(5, shuffle=True, random_state=42), "r2"
+
+
+def evaluate_models(X, y, problem_type, preprocessor):
+    results = []
+
+    cv, scoring = _get_cv(problem_type)
+
+    for model_name in get_models(problem_type):
+        model = get_model_instance(model_name, problem_type)
+
+        pipeline = build_pipeline(model, clone(preprocessor))
+
+        scores = cross_val_score(
+            pipeline,
+            X,
+            y,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=1  # importante para multiprocessing
+        )
+
+        results.append({
+            "model": model_name,
+            "mean_score": scores.mean(),
+            "std_score": scores.std()
+        })
+
+    df = pd.DataFrame(results)
+    df = df.sort_values(by="mean_score", ascending=False)
+
+    return df.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────
+# EVALUACIÓN ROBUSTA (penaliza varianza)
+# ─────────────────────────────────────────────
+
+def evaluate_models_robust(X, y, model_names, problem_type, preprocessor):
+    results = []
+
+    cv, scoring = _get_cv(problem_type)
+
+    for model_name in model_names:
+        model = get_model_instance(model_name, problem_type)
+        pipeline = build_pipeline(model, clone(preprocessor))
+
+        scores = cross_val_score(
+            pipeline,
+            X,
+            y,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=1
+        )
+
+        mean = scores.mean()
+        std = scores.std()
+
+        # Penalización simple
+        robust_score = mean - std
+
+        results.append({
+            "model": model_name,
+            "mean_score": mean,
+            "std_score": std,
+            "robust_score": robust_score
+        })
+
+    df = pd.DataFrame(results)
+    df = df.sort_values(by="robust_score", ascending=False)
+
+    return df.reset_index(drop=True)
+
+
+# ─────────────────────────────────────────────
+# EVALUACIÓN FINAL (TEST)
+# ─────────────────────────────────────────────
+
+def evaluate_trained_models(models_dict, X_test, y_test, problem_type):
+    from sklearn.metrics import (
+        accuracy_score, f1_score,
+        mean_squared_error, mean_absolute_error, r2_score
+    )
 
     results = []
 
-    for name, model in trained_models.items():
-        try:
-            y_pred = model.predict(X_test)
+    for name, model in models_dict.items():
+        y_pred = model.predict(X_test)
 
-            if problem_type == "classification":
-                results.append({
-                    "model": name,
-                    "accuracy": accuracy_score(y_test, y_pred),
-                    "f1": f1_score(y_test, y_pred, average="weighted", zero_division=0),
-                })
-            else:
-                results.append({
-                    "model": name,
-                    "rmse": np.sqrt(mean_squared_error(y_test, y_pred)),
-                    "mae": mean_absolute_error(y_test, y_pred),
-                    "r2": r2_score(y_test, y_pred),
-                })
-
-        except Exception as e:
-            logger.warning(f"{name} falló evaluación: {e}")
+        if problem_type == "classification":
+            results.append({
+                "model": name,
+                "accuracy": accuracy_score(y_test, y_pred),
+                "f1": f1_score(y_test, y_pred, average="weighted", zero_division=0)
+            })
+        else:
+            results.append({
+                "model": name,
+                "rmse": np.sqrt(mean_squared_error(y_test, y_pred)),
+                "mae": mean_absolute_error(y_test, y_pred),
+                "r2": r2_score(y_test, y_pred)
+            })
 
     return pd.DataFrame(results)
-
-
-# ─────────────────────────────────────────────
-# REPORTES
-# ─────────────────────────────────────────────
-
-def get_classification_report(best_model, X_test, y_test, label_encoder=None):
-
-    y_pred = best_model.predict(X_test)
-
-    target_names = (
-        [str(c) for c in label_encoder.classes_]
-        if label_encoder is not None
-        else None
-    )
-
-    return classification_report(y_test, y_pred, target_names=target_names, zero_division=0)
