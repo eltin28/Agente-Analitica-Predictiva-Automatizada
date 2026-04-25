@@ -186,22 +186,27 @@ if st.session_state.task_status == "completed" and st.session_state.results:
         if probs:
             st.bar_chart(pd.Series(probs))
 
-    # ── PREPROCESSING (CORREGIDO)
+    # ── PREPROCESSING
     with st.expander("Preprocesamiento"):
 
         prep = results.get("preprocessing", {})
 
         st.write("Numéricas:")
-        st.dataframe(pd.DataFrame(prep.get("numeric", []), columns=["column"]))
+        st.dataframe(pd.DataFrame(prep.get("numeric_features", []), columns=["column"]))
 
         st.write("Nominales:")
-        st.dataframe(pd.DataFrame(prep.get("categorical_nominal", []), columns=["column"]))
+        st.dataframe(pd.DataFrame(prep.get("nominal_features", []), columns=["column"]))
 
         st.write("Ordinales:")
-        st.dataframe(pd.DataFrame(prep.get("categorical_ordinal", []), columns=["column"]))
+        st.dataframe(pd.DataFrame(prep.get("ordinal_features", []), columns=["column"]))
 
         st.write("Descartadas:")
-        st.dataframe(pd.DataFrame(prep.get("drop", []), columns=["column"]))
+        descartadas = (
+            prep.get("dropped_high_missing", [])
+            + prep.get("dropped_high_cardinality", [])
+            + prep.get("dropped_id_like", [])
+        )
+        st.dataframe(pd.DataFrame(descartadas, columns=["column"]))
 
     # ── PDF
     st.markdown(f"[Descargar PDF]({API_URL}/download/{st.session_state.task_id})")

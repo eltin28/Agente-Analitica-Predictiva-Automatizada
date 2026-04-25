@@ -52,10 +52,19 @@ class CorrelationFilter(BaseEstimator, TransformerMixin):
         X_df = pd.DataFrame(X)
         return X_df.drop(columns=self.columns_to_drop_, errors='ignore')
 
+    def get_feature_names_out(self, input_features=None):
+        if input_features is None:
+            return np.array([], dtype=object)
+        return np.array(
+            [f for f in input_features if f not in self.columns_to_drop_],
+            dtype=object
+        )
+
 
 class WinsorizationTransformer(BaseEstimator, TransformerMixin):
     """
     Winsorización percentil: recorta valores extremos para reducir impacto de outliers.
+    No agrega ni elimina columnas, solo recorta valores.
     """
     def __init__(self, lower_bound=0.01, upper_bound=0.99):
         self.lower_bound = lower_bound
@@ -80,6 +89,15 @@ class WinsorizationTransformer(BaseEstimator, TransformerMixin):
                 lower, upper = self.limits_[col]
                 X_df[col] = np.clip(X_df[col], lower, upper)
         return X_df.values
+
+    def get_feature_names_out(self, input_features=None):
+        """
+        Requerido para que ColumnTransformer propague nombres de columnas.
+        La winsorización no cambia cantidad ni orden de columnas.
+        """
+        if input_features is not None:
+            return np.array(input_features, dtype=object)
+        return np.array(list(self.limits_.keys()), dtype=object)
 
 
 class DropHighCardinalityTransformer(BaseEstimator, TransformerMixin):
@@ -106,6 +124,14 @@ class DropHighCardinalityTransformer(BaseEstimator, TransformerMixin):
     def transform(self, X):
         X_df = pd.DataFrame(X)
         return X_df.drop(columns=self.columns_to_drop_, errors='ignore')
+
+    def get_feature_names_out(self, input_features=None):
+        if input_features is None:
+            return np.array([], dtype=object)
+        return np.array(
+            [f for f in input_features if f not in self.columns_to_drop_],
+            dtype=object
+        )
 
 
 # ─────────────────────────────────────────────
@@ -377,11 +403,6 @@ def preprocess_data(df: pd.DataFrame, target: str) -> tuple:
     column_types = detect_column_types(df, target)
 
     # Resumen de detección
-    dropped = (
-        column_types["drop_missing"]
-        + column_types["high_cardinality"]
-        + column_types["id_like"]
-    )
     useful_cols = (
         column_types["numeric"]
         + column_types["categorical_nominal"]
@@ -421,7 +442,6 @@ def preprocess_data(df: pd.DataFrame, target: str) -> tuple:
     # ── 6. Nombres de features ────────────────────────
     try:
         feature_names = preprocessor.get_feature_names_out()
-        # Limpiar prefijos del ColumnTransformer (ej: "numeric__edad" → "edad")
         feature_names = [
             name.split("__", 1)[-1] if "__" in name else name
             for name in feature_names
