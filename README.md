@@ -8,13 +8,13 @@ Plataforma inteligente que transforma cualquier dataset tabular en un análisis 
 
 El agente ejecuta automáticamente todo el ciclo analítico:
 
-1. Detecta la variable objetivo y el tipo de problema (clasificación o regresión)
-2. Limpia y preprocesa los datos sin configuración manual
-3. Entrena y compara 6 modelos de Machine Learning en paralelo
-4. Selecciona el mejor modelo usando validación cruzada robusta
-5. Opcionalmente optimiza hiperparámetros con Optuna
-6. Genera explicaciones interpretables con SHAP y LIME
-7. Produce un reporte ejecutivo PDF listo para compartir
+Detecta la variable objetivo y el tipo de problema (clasificación o regresión)
+Limpia y preprocesa los datos sin configuración manual
+Entrena y compara 6 modelos de Machine Learning en paralelo
+Selecciona el mejor modelo usando validación cruzada robusta
+Opcionalmente optimiza hiperparámetros con Optuna
+Genera explicaciones interpretables con SHAP y LIME
+Produce un reporte ejecutivo PDF listo para compartir
 
 ---
 
@@ -48,8 +48,33 @@ Los transformers personalizados (`WinsorizationTransformer`, `CorrelationFilter`
 | Decision Tree | Árbol de decisión simple |
 | MLP | Red neuronal multicapa |
 
+---
+
+## Selección de modelo (clave metodológica)
+
+El modelo se selecciona exclusivamente usando el conjunto de entrenamiento, mediante validación cruzada:
 **Criterio de selección:** `robust_score = mean_CV − std_CV`
 Se penaliza la varianza entre folds para preferir modelos estables sobre modelos que puntúan alto pero de forma inconsistente.
+
+## Interpretación
+
+El agente no selecciona el modelo solo por tener menor varianza, sino por:
+
+Alto rendimiento promedio
+Baja variabilidad (más robusto)
+
+Esto evita elegir modelos que:
+
+Puntúan alto pero son inestables
+Sobreajustan a ciertos folds
+Punto crítico (correcto metodológicamente)
+El test set NO participa en la selección del modelo
+El test set se usa únicamente para evaluación final
+
+Esto garantiza:
+
+Evaluación honesta (sin data leakage)
+Generalización realista
 
 ---
 
@@ -68,6 +93,11 @@ Tuned CV:     0.8282  ✔ Modelo optimizado seleccionado
 
 ### SHAP — Importancia global
 Usa `TreeExplainer` para modelos basados en árboles (RandomForest, LightGBM, DecisionTree) y `Explainer` genérico para el resto. Los valores se normalizan a shape `(n_samples, n_features)` para manejar correctamente clasificación binaria, multiclase y regresión.
+
+Permite entender:
+
+Qué variables importan más globalmente
+Magnitud del impacto en el modelo
 
 ### LIME — Explicación local
 Explica la predicción de una instancia específica en el espacio transformado, usando nombres de features legibles (no `feature_0`, `feature_1`).
