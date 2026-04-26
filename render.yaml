@@ -27,4 +27,4 @@ services:
     healthCheckPath: /_stcore/health
     envVars:
       - key: API_URL
-        value: https://agente-api.onrender.com/analyze
+        value: https://agente-api-spm2.onrender.com/analyze
