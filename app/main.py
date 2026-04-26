@@ -57,6 +57,9 @@ app.add_middleware(
 
 app.include_router(analyze_router, prefix="/analyze", tags=["análisis"])
 
+@app.get("/")
+def root():
+    return {"status": "ok"}
 
 @app.get("/health")
 def health():
