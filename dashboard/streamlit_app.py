@@ -112,7 +112,7 @@ def upload_file(file, optimize: bool) -> Optional[dict]:
     Timeout corto (UPLOAD_TIMEOUT) porque solo transfiere el archivo.
     """
     res = _safe_post(
-        API_BASE + "/",
+        API_BASE,
         files={"file": (file.name, file.getvalue(), file.type)},
         params={"optimize": str(optimize).lower()},
         timeout=UPLOAD_TIMEOUT,
