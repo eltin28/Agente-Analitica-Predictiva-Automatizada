@@ -3,9 +3,11 @@ uvicorn
 pandas
 numpy
 scikit-learn
-imbalanced-learn
 lightgbm
+optuna
 shap
 lime
 reportlab
+matplotlib
 python-multipart
+streamlit

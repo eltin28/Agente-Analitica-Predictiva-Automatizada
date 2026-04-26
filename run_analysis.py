@@ -184,6 +184,7 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
 
                     if tuned > baseline:
                         final_model = tuned_model
+                        trained_models_all[best_name] = tuned_model
                         logger.info("✔ Modelo optimizado seleccionado")
 
             except Exception as e:
@@ -199,29 +200,9 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
             problem_type
         )
 
-        y_pred = final_model.predict(X_test)
-
-        if problem_type == "classification":
-            from sklearn.metrics import accuracy_score, f1_score
-
-            final_metrics = {
-                "model": f"{best_name} (final)",
-                "accuracy": accuracy_score(y_test, y_pred),
-                "f1": f1_score(y_test, y_pred, average="weighted", zero_division=0),
-            }
-        else:
-            from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-
-            final_metrics = {
-                "model": f"{best_name} (final)",
-                "rmse": np.sqrt(mean_squared_error(y_test, y_pred)),
-                "mae": mean_absolute_error(y_test, y_pred),
-                "r2": r2_score(y_test, y_pred),
-            }
-
-        test_metrics = pd.concat(
-            [test_metrics, pd.DataFrame([final_metrics])],
-            ignore_index=True
+        # Marcar el modelo seleccionado con ★ en lugar de agregar fila duplicada
+        test_metrics["model"] = test_metrics["model"].apply(
+            lambda m: f"★ {m}" if m == best_name else m
         )
 
         # ── 8. Explainability
@@ -270,12 +251,12 @@ def main(file_path: str, use_optuna: bool = False, n_trials: int = 20) -> dict:
             target=target,
             best_model=best_name,
             metrics_df=test_metrics,
-            lime_text=lime_text.get("text") if isinstance(lime_text, dict) else lime_text,
+            lime_text=lime_text,          # ya es string, sin .get()
             problem_type=problem_type,
-            shap_importance=shap_importance,          # lista de {feature, importance}
-            preprocessing=preprocessing_report,       # dict de get_preprocessing_report()
+            shap_importance=shap_importance,
+            preprocessing=preprocessing_report,
             elapsed_seconds=(datetime.now() - start_time).total_seconds(),
-            probabilities=lime_text.get("probabilities") if isinstance(lime_text, dict) else None,
+            probabilities=lime_probs,     # ya está extraído correctamente arriba
         )
 
         # ── 10. Resultado

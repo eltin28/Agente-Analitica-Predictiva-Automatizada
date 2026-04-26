@@ -1,146 +1,175 @@
-Plataforma Inteligente de Analítica Predictiva Automatizada
-1. Descripción general
-  Esta plataforma es un agente de analítica de datos automatizado diseñado para transformar datasets en información accionable sin requerir intervención técnica avanzada. 
-  A partir de un archivo de entrada (CSV o Excel), el sistema ejecuta un flujo completo de análisis predictivo, desde la preparación de datos hasta la generación de reportes ejecutivos.
-  
-  El objetivo principal es facilitar la toma de decisiones basada en datos mediante la identificación automática de patrones, selección de modelos óptimos y generación de explicaciones interpretables.
+# Agente de Analítica Predictiva Automatizada
 
-2. Propuesta de valor
-  Automatización completa del ciclo analítico (tipo CRISP-DM)
-  Reducción del tiempo de análisis de horas/días a minutos
-  Eliminación de la dependencia de expertos en ciencia de datos para análisis iniciales
-  Resultados interpretables, no solo métricas técnicas
-  Entrega de reportes ejecutivos listos para negocio
-3. Flujo funcional del sistema
-  El agente sigue un proceso estructurado compuesto por las siguientes etapas:
+Plataforma inteligente que transforma cualquier dataset tabular en un análisis predictivo completo — desde la carga del archivo hasta un reporte ejecutivo en PDF — sin requerir intervención técnica avanzada.
 
-3.1 Ingesta de datos
-  El usuario carga un archivo en formato CSV o Excel. El sistema valida la estructura y detecta automáticamente la variable objetivo.
+---
 
-3.2 Entendimiento del problema
-  El sistema identifica si el caso corresponde a:
-    Clasificación (predicción de categorías)
-    Regresión (predicción de valores numéricos)
-    
-3.3 Preparación de datos
-  Se ejecuta un preprocesamiento automático que incluye:
-    Eliminación de columnas irrelevantes (IDs, alta cardinalidad, datos incompletos)
-    Imputación de valores faltantes
-    Codificación de variables categóricas
-    Escalado de variables numéricas
-    Tratamiento de outliers
-    Reducción de correlación entre variables
-    
-3.4 Entrenamiento y evaluación de modelos
-  Se entrenan múltiples algoritmos de Machine Learning de forma paralela, incluyendo:
-    Árboles de decisión
-    Random Forest
-    LightGBM
-    SVM
-    KNN
-    Redes neuronales
+## ¿Qué hace?
 
-  El sistema realiza:
-    Validación cruzada en dos fases (rápida y profunda)
-    Selección automática de los mejores modelos
-    Evaluación objetiva con métricas adecuadas al tipo de problema
-    
-3.5 Optimización (opcional)
-  Si el usuario lo activa, el sistema ejecuta optimización de hiperparámetros para mejorar el rendimiento del mejor modelo encontrado.
+El agente ejecuta automáticamente todo el ciclo analítico:
 
-3.6 Evaluación final
-  El modelo seleccionado es evaluado con datos no vistos (test), generando:
-    Métricas de desempeño
-    Comparación entre modelos
-    Reportes de clasificación (si aplica)
-    
-3.7 Explicabilidad
-  El sistema no solo predice, también explica:
-    LIME: explicación local de una predicción específica
-    SHAP: importancia global de variables
+1. Detecta la variable objetivo y el tipo de problema (clasificación o regresión)
+2. Limpia y preprocesa los datos sin configuración manual
+3. Entrena y compara 6 modelos de Machine Learning en paralelo
+4. Selecciona el mejor modelo usando validación cruzada robusta
+5. Opcionalmente optimiza hiperparámetros con Optuna
+6. Genera explicaciones interpretables con SHAP y LIME
+7. Produce un reporte ejecutivo PDF listo para compartir
 
-  Esto permite entender:
-    Qué variables influyen más
-    Cómo impactan las decisiones del modelo
-    
-3.8 Generación de reportes
-  Se generan automáticamente:
-    Reporte PDF ejecutivo
-    Archivo JSON estructurado con todos los resultados
+---
 
-4. Interfaz de usuario (Dashboard)
-  El sistema cuenta con una interfaz interactiva que permite:
-    Cargar archivos fácilmente
-    Activar o desactivar optimización
-    Monitorear el estado del análisis en tiempo real
-    Visualizar métricas y resultados
-    Interpretar explicaciones del modelo
-    Descargar reportes
+## Preprocesamiento automático
 
-5. Reglas de negocio para el usuario final
+El sistema analiza cada columna del dataset y la clasifica sin intervención manual:
 
-5.1 Sobre los datos
-  El dataset debe tener una estructura tabular clara
-  Debe existir una variable objetivo identificable
-  No se recomienda:
-    Columnas con más del 40% de valores nulos
-    Variables con demasiados valores únicos (alta cardinalidad)
-    Datos no estructurados (texto libre sin procesamiento).
+| Tipo detectado | Criterio | Transformación aplicada |
+|---|---|---|
+| `NUMERIC` | dtype numérico | IterativeImputer → Winsorización 1%-99% → StandardScaler |
+| `CATEGORICAL_ORDINAL` | categórica ≤ 10 valores únicos | SimpleImputer → OrdinalEncoder |
+| `CATEGORICAL_NOMINAL` | categórica 11–50 valores únicos | SimpleImputer → OneHotEncoder (drop="first") |
+| `HIGH_CARDINALITY` | categórica > 50 valores únicos | Descartada |
+| `DROP_MISSING` | > 40% nulos | Descartada |
+| `ID_LIKE` | nombre contiene "id/key/code" o > 95% valores únicos | Descartada |
 
-5.2 Sobre la variable objetivo
-  Debe representar claramente lo que se desea predecir
-  Puede ser:
-    Binaria (sí/no)
-    Multiclase
-    Numérica continua
+> **Sin hardcoding.** El sistema no conoce ningún nombre de columna de antemano.
 
-5.3 Sobre los resultados
-  El “mejor modelo” es seleccionado con base en métricas estadísticas, no criterio de negocio
-  Los resultados deben ser interpretados en contexto
-  Un alto desempeño no garantiza aplicabilidad directa sin validación real
+Los transformers personalizados (`WinsorizationTransformer`, `CorrelationFilter`, `DropHighCardinalityTransformer`) implementan `get_feature_names_out()` para que los nombres de features se propaguen correctamente hacia SHAP y LIME.
 
-5.4 Sobre la explicabilidad
-  Las explicaciones LIME son locales (caso específico)
-  Las explicaciones SHAP son globales (comportamiento general)
-  No deben interpretarse como causalidad, sino como influencia estadística
+---
 
-5.5 Sobre la optimización
-  Activar optimización mejora precisión pero aumenta el tiempo de ejecución
-  No siempre garantiza mejoras significativas.
+## Modelos disponibles
 
-5.6 Sobre el uso en negocio
-  Este sistema apoya la toma de decisiones, no la reemplaza.
-  Se recomienda:
-    Validar resultados con expertos del dominio
-    Integrar los modelos en procesos controlados
-    Monitorear desempeño en producción
+| Modelo | Tipo |
+|---|---|
+| Random Forest | Ensemble de árboles |
+| LightGBM | Gradient boosting |
+| SVM | Máquina de soporte vectorial |
+| KNN | K-vecinos más cercanos |
+| Decision Tree | Árbol de decisión simple |
+| MLP | Red neuronal multicapa |
 
-6. Casos de uso
-  Predicción de abandono de clientes
-  Clasificación de riesgo crediticio
-  Pronóstico de ventas
-  Detección de fraude
-  Segmentación de usuarios
-  Análisis de comportamiento
+**Criterio de selección:** `robust_score = mean_CV − std_CV`
+Se penaliza la varianza entre folds para preferir modelos estables sobre modelos que puntúan alto pero de forma inconsistente.
 
-7. Limitaciones
-  No maneja datos no estructurados (texto libre, imágenes, audio)
-  Depende de la calidad del dataset
-  No reemplaza procesos avanzados de modelado especializado
-  Puede verse afectado por datasets muy pequeños o altamente ruidosos.
+---
 
-8. Arquitectura general
-  El sistema está compuesto por:
-    Backend analítico (pipeline automatizado)
-    API para ejecución de tareas
-    Motor de modelos de Machine Learning
-    Módulo de explicabilidad
-    Generador de reportes
-    Dashboard interactivo
+## Optimización con Optuna (opcional)
 
-9. Resultado final
-  El usuario obtiene:
-    Modelo predictivo optimizado
-    Métricas claras de desempeño
-    Explicaciones interpretables
-    Reporte ejecutivo listo para compartir
+Cuando el usuario activa la optimización, el sistema busca los mejores hiperparámetros para el modelo ganador usando búsqueda bayesiana. El modelo tuneado solo reemplaza al baseline si supera su score en validación cruzada.
+
+```
+Baseline CV:  0.8145
+Tuned CV:     0.8282  ✔ Modelo optimizado seleccionado
+```
+
+---
+
+## Explicabilidad
+
+### SHAP — Importancia global
+Usa `TreeExplainer` para modelos basados en árboles (RandomForest, LightGBM, DecisionTree) y `Explainer` genérico para el resto. Los valores se normalizan a shape `(n_samples, n_features)` para manejar correctamente clasificación binaria, multiclase y regresión.
+
+### LIME — Explicación local
+Explica la predicción de una instancia específica en el espacio transformado, usando nombres de features legibles (no `feature_0`, `feature_1`).
+
+> Las explicaciones indican **influencia estadística**, no causalidad.
+
+---
+
+## Reporte PDF
+
+El reporte generado automáticamente incluye:
+
+- **Cabecera ejecutiva** con metadata del análisis (target, modelo, duración, fecha)
+- **Tarjetas de métricas** destacadas (Accuracy, F1-Score o R², RMSE, MAE)
+- **Tabla comparativa** de todos los modelos en test set, con el modelo seleccionado marcado con ★
+- **Gráfico de barras** de comparación visual (modelo ganador en naranja)
+- **Gráfico SHAP** con las top features por importancia media absoluta
+- **Tabla LIME** con dirección de influencia (▲ Aumenta / ▼ Reduce) por feature
+- **Resumen de preprocesamiento** con columnas usadas y descartadas por grupo
+- **Conclusión** con recomendación de uso
+
+---
+
+## Instalación
+
+```bash
+# Clonar el repositorio
+git clone <repo-url>
+cd agent
+
+# Crear entorno virtual
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Instalar dependencias
+pip install -r requirements.txt
+
+# Iniciar la API
+uvicorn app.main:app --reload
+
+# Iniciar el dashboard (en otra terminal)
+streamlit run dashboard/streamlit_app.py
+```
+
+---
+
+## Uso
+
+1. Abre el dashboard en `http://localhost:8501`
+2. Sube un archivo CSV o XLSX
+3. Activa "Optimizar con Optuna" si quieres mayor precisión (tarda más)
+4. Haz clic en **▶ Ejecutar análisis**
+5. Espera el resultado — el dashboard se actualiza automáticamente
+6. Descarga el PDF o revisa las métricas en pantalla
+
+---
+
+## Formatos de entrada soportados
+
+| Formato | Requisitos |
+|---|---|
+| CSV | Separado por coma, cualquier encoding |
+| XLSX | Primera hoja del libro |
+
+**Requisitos del dataset:**
+- Mínimo 50 filas
+- Al menos una columna identificable como variable objetivo
+- Estructura tabular (sin texto libre, imágenes ni audio)
+
+---
+
+## Resultado de cada análisis
+
+Cada ejecución genera en `outputs/tasks_output/{task_id}/`:
+
+```
+results.json    # Métricas, preprocesamiento, SHAP, LIME, parámetros Optuna
+report.pdf      # Reporte ejecutivo listo para compartir
+```
+
+---
+
+## Limitaciones conocidas
+
+- No procesa datos no estructurados (texto libre, imágenes, audio)
+- El rendimiento depende directamente de la calidad del dataset
+- Datasets muy pequeños (< 50 filas) o muy ruidosos pueden producir resultados poco confiables
+- El modelo seleccionado se basa en métricas estadísticas, no en criterio de negocio
+- Se recomienda validar los resultados con expertos del dominio antes de usar en producción
+
+---
+
+## Casos de uso sugeridos
+
+- Predicción de abandono de clientes (churn)
+- Clasificación de riesgo crediticio
+- Detección de fraude
+- Pronóstico de ventas o demanda
+- Segmentación de usuarios
+- Cualquier problema de clasificación binaria, multiclase o regresión sobre datos tabulares
+
+---
+
+> **Este sistema apoya la toma de decisiones, no la reemplaza.**
+> Se recomienda integrar los modelos en procesos controlados y monitorear su desempeño en producción.

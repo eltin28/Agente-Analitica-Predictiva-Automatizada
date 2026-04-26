@@ -28,13 +28,15 @@ BRAND_MID    = colors.HexColor("#2E5FA3")   # azul medio
 BRAND_LIGHT  = colors.HexColor("#EBF1FB")   # azul muy claro
 ACCENT       = colors.HexColor("#E8622A")   # naranja acento
 GRAY_LIGHT   = colors.HexColor("#F4F6F9")
+GRAY_MID     = colors.HexColor("#C8CDD6")
+TEXT_DARK    = colors.HexColor("#1A1A2E")
 TEXT_MUTED   = colors.HexColor("#6B7280")
 
-MPL_GRAY_MID = "#C8CDD6"
-MPL_TEXT_DARK = "#1A1A2E"
 MPL_BLUE     = "#2E5FA3"
 MPL_ORANGE   = "#E8622A"
 MPL_LIGHT    = "#EBF1FB"
+MPL_TEXT_DARK = "#1A1A2E"
+MPL_GRAY_MID  = "#C8CDD6"
 
 
 def _build_styles():
@@ -73,7 +75,7 @@ def _build_styles():
             "BodyText",
             parent=base["Normal"],
             fontSize=9.5,
-            textColor=MPL_TEXT_DARK,
+            textColor=TEXT_DARK,
             leading=15,
             spaceAfter=6,
             fontName="Helvetica",
@@ -115,7 +117,7 @@ def _build_styles():
             "LimeCode",
             parent=base["Code"],
             fontSize=8.5,
-            textColor=MPL_TEXT_DARK,
+            textColor=TEXT_DARK,
             backColor=GRAY_LIGHT,
             leading=14,
             leftIndent=10,
@@ -201,14 +203,18 @@ def _header_block(styles, target, best_model, problem_type, elapsed):
 # TARJETAS DE MÉTRICAS PRINCIPALES
 # ─────────────────────────────────────────────
 
-def _metric_cards(styles, metrics_df, problem_type):
+def _metric_cards(styles, metrics_df, problem_type, best_model=None):
     _, S = styles
 
-    # Tomar fila del mejor modelo (última, que es el final)
     if metrics_df.empty:
         return []
 
-    row = metrics_df.iloc[-1]
+    # Buscar la fila del best_model por nombre (con o sin el prefijo ★)
+    if best_model:
+        mask = metrics_df["model"].str.contains(best_model, regex=False, na=False)
+        row = metrics_df[mask].iloc[0] if mask.any() else metrics_df.iloc[0]
+    else:
+        row = metrics_df.iloc[0]
 
     if problem_type == "classification":
         cards = [
@@ -287,7 +293,7 @@ def _metrics_table(styles, metrics_df):
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.4, MPL_GRAY_MID ),
+        ("GRID", (0, 0), (-1, -1), 0.4, GRAY_MID),
         ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
@@ -302,7 +308,7 @@ def _metrics_table(styles, metrics_df):
 # GRÁFICO DE BARRAS — COMPARACIÓN DE MODELOS
 # ─────────────────────────────────────────────
 
-def _models_chart(metrics_df, problem_type):
+def _models_chart(metrics_df, problem_type, best_model=None):
     """Genera imagen PNG en memoria con la comparación de modelos."""
     if metrics_df.empty or len(metrics_df) < 2:
         return None
@@ -311,14 +317,20 @@ def _models_chart(metrics_df, problem_type):
     if metric_col not in metrics_df.columns:
         return None
 
-    df = metrics_df.dropna(subset=[metric_col]).sort_values(metric_col, ascending=True)
+    # Excluir fila "(final)" duplicada generada por run_analysis
+    df = metrics_df[~metrics_df["model"].str.contains("final", na=False)]
+    df = df.dropna(subset=[metric_col]).sort_values(metric_col, ascending=True)
     if df.empty:
         return None
 
     fig, ax = plt.subplots(figsize=(7, max(2.5, len(df) * 0.55)))
     fig.patch.set_facecolor("white")
 
-    bar_colors = [MPL_ORANGE if i == len(df) - 1 else MPL_BLUE for i in range(len(df))]
+    # Colorear por nombre real del best_model, no por posición en ranking
+    bar_colors = [
+        MPL_ORANGE if (best_model and best_model in str(m)) else MPL_BLUE
+        for m in df["model"]
+    ]
     bars = ax.barh(df["model"], df[metric_col], color=bar_colors,
                    height=0.55, edgecolor="white", linewidth=0.5)
 
@@ -334,7 +346,7 @@ def _models_chart(metrics_df, problem_type):
     ax.spines[["top", "right", "left"]].set_visible(False)
     ax.tick_params(axis="y", labelsize=8.5, colors=MPL_TEXT_DARK)
     ax.tick_params(axis="x", labelsize=7.5, colors="#6B7280")
-    ax.xaxis.grid(True, linestyle="--", alpha=0.4, color=MPL_GRAY_MID )
+    ax.xaxis.grid(True, linestyle="--", alpha=0.4, color=MPL_GRAY_MID)
 
     best_patch = mpatches.Patch(color=MPL_ORANGE, label="Mejor modelo")
     rest_patch = mpatches.Patch(color=MPL_BLUE, label="Otros modelos")
@@ -447,7 +459,7 @@ def _lime_section(styles, lime_text, probabilities):
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
             ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-            ("GRID", (0, 0), (-1, -1), 0.4, MPL_GRAY_MID ),
+            ("GRID", (0, 0), (-1, -1), 0.4, GRAY_MID),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRAY_LIGHT]),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
@@ -502,7 +514,7 @@ def _preprocessing_section(styles, preprocessing):
     label_style = ParagraphStyle("pl", fontSize=8.5, fontName="Helvetica-Bold",
                                  textColor=BRAND_DARK)
     val_style   = ParagraphStyle("pv", fontSize=8.5, fontName="Helvetica",
-                                 textColor=MPL_TEXT_DARK, alignment=TA_RIGHT)
+                                 textColor=TEXT_DARK, alignment=TA_RIGHT)
 
     summary_data = [
         [Paragraph(k, label_style), Paragraph(v, val_style)]
@@ -515,7 +527,7 @@ def _preprocessing_section(styles, preprocessing):
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-        ("BOX", (0, 0), (-1, -1), 0.5, MPL_GRAY_MID ),
+        ("BOX", (0, 0), (-1, -1), 0.5, GRAY_MID),
     ]))
 
     def col_list(cols, color):
@@ -543,7 +555,7 @@ def _preprocessing_section(styles, preprocessing):
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.4, MPL_GRAY_MID ),
+        ("GRID", (0, 0), (-1, -1), 0.4, GRAY_MID),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, GRAY_LIGHT]),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
@@ -559,14 +571,12 @@ def _preprocessing_section(styles, preprocessing):
 
 def _section(title, styles, elements):
     _, S = styles
-
-    header = KeepTogether([
+    return [
         Spacer(1, 4),
         HRFlowable(width="100%", thickness=1.5, color=BRAND_MID, spaceAfter=4),
         Paragraph(title, S["SectionHeading"]),
-    ])
-
-    return [header, *elements]
+        *elements,
+    ]
 
 
 # ─────────────────────────────────────────────
@@ -625,28 +635,26 @@ def generate_pdf_report(
 
     # ── TARJETAS DE MÉTRICAS ──────────────────
     story += _section("Resumen de Rendimiento", styles,
-                      _metric_cards(styles, metrics_df, problem_type))
+                      _metric_cards(styles, metrics_df, problem_type, best_model=best_model))
 
     # ── TABLA COMPLETA ────────────────────────
     story += _section("Comparación de Modelos — Test Set", styles,
                       _metrics_table(styles, metrics_df))
 
     # ── GRÁFICO DE MODELOS ────────────────────
-    chart_buf = _models_chart(metrics_df, problem_type)
+    # Filtrar fila final para calcular altura real
+    _df_chart = metrics_df[~metrics_df["model"].str.contains("final", na=False)]
+    chart_buf = _models_chart(metrics_df, problem_type, best_model=best_model)
     if chart_buf:
-        img = Image(chart_buf, width=14*cm, height=max(3.5*cm, len(metrics_df)*1.1*cm))
-        from reportlab.platypus import KeepTogether
-
-        chart_block = KeepTogether([
-            img,
-            Spacer(1, 6),
-            Paragraph(
-                "Figura 1. Comparación de modelos por F1-Score ponderado en test set. "
-                "El modelo destacado en naranja es el seleccionado como final.",
-                S["Caption"]
-            )
-        ])
-
+        chart_h = max(3.5*cm, len(_df_chart) * 1.1*cm)
+        img = Image(chart_buf, width=14*cm, height=chart_h)
+        caption = Paragraph(
+            "Figura 1. Comparación de modelos por F1-Score ponderado en test set. "
+            "El modelo destacado en naranja es el seleccionado como final.",
+            S["Caption"]
+        )
+        # KeepTogether evita que el gráfico se parta entre páginas
+        chart_block = KeepTogether([img, Spacer(1, 4), caption])
         story += _section("Comparación Visual", styles, [chart_block])
 
     # ── SHAP ──────────────────────────────────
