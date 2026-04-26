@@ -2,6 +2,7 @@ services:
   - type: web
     name: agente-api
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -11,6 +12,7 @@ services:
   - type: web
     name: agente-dashboard
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run dashboard/streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
     envVars:
