@@ -4,17 +4,27 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
     envVars:
       - key: PYTHONPATH
         value: .
+      - key: ALLOWED_ORIGINS
+        # Pon aquí el dominio exacto que Render asigna al dashboard.
+        # Si lo renombraste, ajústalo. Puedes agregar más separados por coma.
+        value: https://agente-dashboard.onrender.com
 
   - type: web
     name: agente-dashboard
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run dashboard/streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    startCommand: >
+      streamlit run dashboard/streamlit_app.py
+      --server.port $PORT
+      --server.address 0.0.0.0
+      --server.headless true
+    healthCheckPath: /_stcore/health
     envVars:
       - key: API_URL
         value: https://agente-api.onrender.com/analyze

@@ -40,11 +40,17 @@ sys.path.append(os.getcwd())
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
 
-UPLOAD_DIR       = "outputs/uploads"
-TASK_DIR         = "outputs/tasks"
-TASK_OUTPUT_DIR  = "outputs/tasks_output"   # PDFs y JSONs por task
+UPLOAD_DIR      = "outputs/uploads"
+TASK_DIR        = "outputs/tasks"
+TASK_OUTPUT_DIR = "outputs/tasks_output"
 
-MAX_WORKERS    = 2
+# ── CAMBIO CLAVE: 1 worker en lugar de 2 ─────────────────────────────────────
+# Render free tier tiene ~512 MB RAM. Cada proceso hijo hereda el intérprete
+# de Python (~100-200 MB) más el modelo ML en memoria. Con 2 workers paralelos
+# + el proceso padre el OOM killer de Render mata el proceso y produce el
+# "Shutting down" que se ve en logs. Con 1 worker el análisis es secuencial
+# pero estable. Subir a Starter ($7/mo) permite volver a max_workers=2.
+MAX_WORKERS    = 1
 MAX_QUEUE_SIZE = 10
 MAX_FILE_MB    = 50
 MAX_FILE_BYTES = MAX_FILE_MB * 1024 * 1024
@@ -87,23 +93,18 @@ def _read_task(task_id: str) -> dict | None:
 def _count_active_tasks() -> int:
     if not os.path.exists(TASK_DIR):
         return 0
-
     count = 0
     for fname in os.listdir(TASK_DIR):
         if not fname.endswith(".json"):
             continue
-
         try:
             path = os.path.join(TASK_DIR, fname)
             with open(path, encoding="utf-8") as f:
                 status = json.load(f).get("status")
-
             if status in ("queued", "running"):
                 count += 1
-
         except Exception:
             continue
-
     return count
 
 
@@ -120,7 +121,6 @@ def _run_pipeline_in_process(task_id: str, file_path: str, optimize: bool) -> No
         from run_analysis import main as run_pipeline
 
         task_data = _read_task(task_id) or {}
-
         task_data.update({
             "status": "running",
             "started_at": datetime.utcnow().isoformat(),
@@ -128,13 +128,10 @@ def _run_pipeline_in_process(task_id: str, file_path: str, optimize: bool) -> No
         _write_task(task_id, task_data)
 
         print(f"[TASK {task_id}] RUNNING PIPELINE")
-
         result = run_pipeline(file_path, use_optuna=optimize)
-
         print(f"[TASK {task_id}] PIPELINE DONE")
 
         final_status = "completed" if result.get("status") == "success" else "failed"
-
         task_data.update({
             "status": final_status,
             "finished_at": datetime.utcnow().isoformat(),
@@ -145,7 +142,7 @@ def _run_pipeline_in_process(task_id: str, file_path: str, optimize: bool) -> No
     except Exception as e:
         print(f"[TASK {task_id}] ERROR: {e}")
         print(traceback.format_exc())
-
+        task_data = _read_task(task_id) or {}
         task_data.update({
             "status": "failed",
             "finished_at": datetime.utcnow().isoformat(),
@@ -153,6 +150,15 @@ def _run_pipeline_in_process(task_id: str, file_path: str, optimize: bool) -> No
             "traceback": traceback.format_exc(),
         })
         _write_task(task_id, task_data)
+
+    finally:
+        # Limpia el archivo subido independientemente del resultado
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+                print(f"[TASK {task_id}] Upload eliminado: {file_path}")
+            except Exception:
+                pass
 
 
 # ─────────────────────────────────────────────
@@ -166,7 +172,7 @@ async def analyze(
 ):
     """
     Recibe un archivo y lanza el pipeline en background.
-    Retorna task_id inmediatamente (< 200ms).
+    Retorna task_id inmediatamente (< 200 ms).
     """
     filename = file.filename or ""
 
@@ -176,7 +182,6 @@ async def analyze(
             detail="Formato no soportado. Usa CSV o Excel (.xlsx)."
         )
 
-    # ── Verificar cola ────────────────────────────────
     if _count_active_tasks() >= MAX_QUEUE_SIZE:
         raise HTTPException(
             status_code=429,
@@ -185,7 +190,7 @@ async def analyze(
 
     # ── Guardar archivo por chunks ────────────────────
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    task_id = str(uuid.uuid4())
+    task_id   = str(uuid.uuid4())
     safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename)
     file_path = os.path.join(UPLOAD_DIR, f"{task_id}_{safe_name}")
 
@@ -209,35 +214,29 @@ async def analyze(
 
     # ── Crear task ────────────────────────────────────
     task_data = {
-        "task_id": task_id,
-        "status": "queued",
-        "filename": filename,
+        "task_id":     task_id,
+        "status":      "queued",
+        "filename":    filename,
         "file_size_mb": size_mb,
-        "optimize": optimize,
-        "created_at": datetime.utcnow().isoformat(),
-        "started_at": None,
+        "optimize":    optimize,
+        "created_at":  datetime.utcnow().isoformat(),
+        "started_at":  None,
         "finished_at": None,
-        "result": None,
-        "error": None,
+        "result":      None,
+        "error":       None,
     }
     _write_task(task_id, task_data)
 
-    executor = get_executor()
-
-    if _count_active_tasks() >= MAX_QUEUE_SIZE:
-        raise HTTPException(
-            status_code=429,
-            detail="Servidor ocupado. Intenta en unos minutos."
-        )
     # ── Lanzar proceso ────────────────────────────────
+    executor = get_executor()
     executor.submit(_run_pipeline_in_process, task_id, file_path, optimize)
-    logger.info(f"Workers activos: {_count_active_tasks()}/{MAX_QUEUE_SIZE}")
+    logger.info(f"Task {task_id} encolada. Activas: {_count_active_tasks()}/{MAX_QUEUE_SIZE}")
 
     return {
-        "task_id": task_id,
-        "status": "queued",
-        "status_url": f"/analyze/status/{task_id}",
-        "results_url": f"/analyze/results/{task_id}",
+        "task_id":      task_id,
+        "status":       "queued",
+        "status_url":   f"/analyze/status/{task_id}",
+        "results_url":  f"/analyze/results/{task_id}",
         "download_url": f"/analyze/download/{task_id}",
     }
 
@@ -253,11 +252,11 @@ def get_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task no encontrada.")
 
     response = {
-        "task_id": task_id,
-        "status": task["status"],
-        "filename": task.get("filename"),
-        "created_at": task.get("created_at"),
-        "started_at": task.get("started_at"),
+        "task_id":     task_id,
+        "status":      task["status"],
+        "filename":    task.get("filename"),
+        "created_at":  task.get("created_at"),
+        "started_at":  task.get("started_at"),
         "finished_at": task.get("finished_at"),
     }
 
@@ -266,8 +265,8 @@ def get_status(task_id: str):
 
     if task["status"] == "completed" and task.get("result"):
         run_info = task["result"].get("run_info", {})
-        response["best_model"] = run_info.get("best_model")
-        response["elapsed_seconds"] = run_info.get("elapsed_seconds")
+        response["best_model"]       = run_info.get("best_model")
+        response["elapsed_seconds"]  = run_info.get("elapsed_seconds")
 
     return response
 
@@ -288,10 +287,7 @@ def get_results(task_id: str):
         return {"status": status, "message": "El análisis está en progreso."}
 
     if status == "failed":
-        return {
-            "status": "failed",
-            "error": task.get("error", "Error desconocido"),
-        }
+        return {"status": "failed", "error": task.get("error", "Error desconocido")}
 
     return task.get("result", {})
 
@@ -302,10 +298,6 @@ def get_results(task_id: str):
 
 @router.get("/download/{task_id}")
 def download_pdf(task_id: str):
-    """
-    Descarga el PDF del reporte ejecutivo de la task.
-    Solo disponible cuando status = completed.
-    """
     task = _read_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task no encontrada.")
@@ -316,9 +308,7 @@ def download_pdf(task_id: str):
             detail=f"El análisis no ha terminado. Estado actual: {task['status']}"
         )
 
-    # Ruta del PDF generado por run_analysis
     pdf_path = os.path.join(TASK_OUTPUT_DIR, task_id, "report.pdf")
-
     if not os.path.exists(pdf_path):
         raise HTTPException(
             status_code=404,
@@ -350,18 +340,14 @@ def list_tasks(limit: int = 20):
             with open(os.path.join(TASK_DIR, fname), encoding="utf-8") as f:
                 data = json.load(f)
             tasks.append({
-                "task_id": data.get("task_id"),
-                "status": data.get("status"),
-                "filename": data.get("filename"),
-                "created_at": data.get("created_at"),
-                "best_model": (
-                    data["result"].get("run_info", {}).get("best_model")
-                    if data.get("result") else None
-                ),
-                "elapsed_seconds": (
-                    data["result"].get("run_info", {}).get("elapsed_seconds")
-                    if data.get("result") else None
-                ),
+                "task_id":          data.get("task_id"),
+                "status":           data.get("status"),
+                "filename":         data.get("filename"),
+                "created_at":       data.get("created_at"),
+                "best_model":       (data["result"].get("run_info", {}).get("best_model")
+                                     if data.get("result") else None),
+                "elapsed_seconds":  (data["result"].get("run_info", {}).get("elapsed_seconds")
+                                     if data.get("result") else None),
             })
         except Exception:
             continue

@@ -1,9 +1,7 @@
 # app/main.py
-"""
-FastAPI app con gestión correcta del ciclo de vida del ProcessPoolExecutor.
-"""
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -18,21 +16,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Orígenes permitidos ───────────────────────────────────────────────────────
+# Se leen de variable de entorno para no hardcodear URLs de producción.
+# En render.yaml se define ALLOWED_ORIGINS con el dominio real del dashboard.
+_raw_origins = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:8501,http://127.0.0.1:8501",
+)
+ALLOWED_ORIGINS: list[str] = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Gestión del ciclo de vida:
-      - startup:  inicializa el ProcessPoolExecutor
-      - shutdown: espera que terminen los procesos activos y cierra limpio
-    """
-    logger.info("Iniciando ProcessPoolExecutor...")
-    executor = get_executor()   # inicializa el pool
+    logger.info("Iniciando executor...")
+    executor = get_executor()
     logger.info("API lista.")
-
-    yield  # app corriendo
-
-    logger.info("Cerrando ProcessPoolExecutor (esperando procesos activos)...")
+    yield
+    logger.info("Cerrando executor (esperando tareas activas)...")
     executor.shutdown(wait=True)
     logger.info("Shutdown completo.")
 
@@ -46,24 +46,19 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8501",   # Streamlit local
-        "http://127.0.0.1:8501",
-        # agrega aquí tu dominio real en producción
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(analyze_router, prefix="/analyze", tags=["análisis"])
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
 
+@app.get("/")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 if __name__ == "__main__":
     import uvicorn
